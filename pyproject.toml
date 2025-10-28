@@ -1,0 +1,10 @@
+[project]
+name = "carla-rl-pytorch"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.7"
+dependencies = [
+    "carla==0.9.16",
+    "numpy",
+]
