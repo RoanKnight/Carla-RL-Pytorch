@@ -1,0 +1,32 @@
+# Configuration for the CARLA client
+carla:
+  host: localhost
+  port: 2000
+  timeout: 10.0
+
+# World configuration
+world:
+  map: Town03
+  synchronous_mode: true
+
+# Vehicle configuration
+vehicle:
+  model: vehicle.tesla.model3
+  spawn_point_index: 8
+  destination_index: 44
+
+# Camera configuration
+camera:
+  distance_behind: 6.0
+  height_above: 2.0
+
+# Weather configuration
+weather:
+  cloudiness: 30.0
+  precipitation: 70.0
+  precipitation_deposits: 70.0
+  wind_intensity: 30.0
+  sun_altitude_angle: 90.0
+  sun_azimuth_angle: 180.0
+  fog_density: 10.0
+  wetness: 70.0
