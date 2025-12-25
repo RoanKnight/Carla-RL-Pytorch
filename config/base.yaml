@@ -15,18 +15,24 @@ vehicle:
   spawn_point_index: 8
   destination_index: 44
 
-# Camera configuration
+# Spectator camera configuration (for main.py visualization)
 camera:
   distance_behind: 6.0
   height_above: 2.0
 
+# Observation configuration (RGB sensor for RL)
+observation:
+  width: 640
+  height: 480
+  fov: 90
+
 # Weather configuration
 weather:
-  cloudiness: 30.0
-  precipitation: 70.0
-  precipitation_deposits: 70.0
-  wind_intensity: 30.0
-  sun_altitude_angle: 90.0
-  sun_azimuth_angle: 180.0
-  fog_density: 10.0
-  wetness: 70.0
+  cloudiness: 100.0
+  precipitation: 90.0
+  precipitation_deposits: 90.0
+  wind_intensity: 80.0
+  sun_altitude_angle: 40.0
+  sun_azimuth_angle: 120.0
+  fog_density: 30.0
+  wetness: 100.0

@@ -1,58 +1,33 @@
 import logging
 import carla
-from utils import load_config, get_monitor_refresh_rate, setup_logging
+from utils import load_config, setup_logging
+from environment import CarlaEnv
 
 # Load configuration
 CONFIG = load_config()
 
-MONITOR_REFRESH_RATE = get_monitor_refresh_rate()
-FIXED_DELTA_SECONDS = 1 / MONITOR_REFRESH_RATE
-
 def main():
   setup_logging()
-  client = carla.Client(CONFIG['carla']['host'], CONFIG['carla']['port'])
-  client.set_timeout(CONFIG['carla']['timeout'])
-  logging.info(
-      f'Connected to CARLA (targeting {MONITOR_REFRESH_RATE}Hz refresh rate)')
+  logging.info('Setting up CARLA environment')
 
-  world = client.load_world(CONFIG['world']['map'])
-  original_settings = world.get_settings()
-  settings = world.get_settings()
-  settings.synchronous_mode = CONFIG['world']['synchronous_mode']
-  settings.fixed_delta_seconds = FIXED_DELTA_SECONDS
-  world.apply_settings(settings)
-  world.set_weather(carla.WeatherParameters(**CONFIG['weather']))
-  logging.info('World configured')
+  # Create environment using the CarlaEnv class
+  env = CarlaEnv()
+  obs, info = env.reset()
 
-  # Get spawn points and ensure that the spawn point index is valid
-  spawn_points = world.get_map().get_spawn_points()
-  if CONFIG['vehicle']['spawn_point_index'] >= len(spawn_points):
-    logging.warning(
-        f'Spawn point index {CONFIG["vehicle"]["spawn_point_index"]} not available. Map {CONFIG["world"]["map"]} has {len(spawn_points)} spawn points. Using index 0.')
-    spawn_point_index = 0
-  else:
-    spawn_point_index = CONFIG['vehicle']['spawn_point_index']
-
-  # Spawn the vehicle at the spawn point
-  vehicle = world.spawn_actor(world.get_blueprint_library().filter(
-      CONFIG['vehicle']['model'])[0], spawn_points[spawn_point_index])
-  logging.info(f'Vehicle spawned at spawn point {spawn_point_index}')
-
-  destination_location = None
-  if CONFIG['vehicle']['destination_index'] is not None:
-    if CONFIG['vehicle']['destination_index'] >= len(spawn_points):
-      logging.warning(
-          f'Destination index {CONFIG["vehicle"]["destination_index"]} not available. Map {CONFIG["world"]["map"]} has {len(spawn_points)} spawn points.')
-    else:
-      destination_location = spawn_points[CONFIG['vehicle']['destination_index']].location
-      logging.info(f'Destination set at spawn point {CONFIG["vehicle"]["destination_index"]}')
-
+  # Get CARLA objects for visualization
+  world = env.world
+  vehicle = env.vehicle
   spectator = world.get_spectator()
-  actors = [vehicle]
+
+  # Get destination location for visualization
+  destination_location = None
+  dest_idx = CONFIG['vehicle']['destination_index']
+  if dest_idx is not None and dest_idx < len(env.spawn_points):
+    destination_location = env.spawn_points[dest_idx].location
+    logging.info(f'Destination set at spawn point {dest_idx}')
 
   try:
     while True:
-      world.tick()
       # Position spectator relatively to allow the camera to rotate freely using the mouse
       spectator_transform = spectator.get_transform()
       transform = vehicle.get_transform()
@@ -69,13 +44,14 @@ def main():
             thickness=0.4,
             color=carla.Color(255, 0, 0),
             life_time=0.1)
+
+      # Tick the world for spectator updates
+      world.tick()
+
   except KeyboardInterrupt:
     logging.info('Simulation stopped')
   finally:
-    # Cleanup actors and restore settings
-    for actor in actors:
-      actor.destroy()
-    world.apply_settings(original_settings)
+    env.close()
 
 if __name__ == '__main__':
   main()
