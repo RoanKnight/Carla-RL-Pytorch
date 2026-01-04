@@ -22,17 +22,17 @@ camera:
 
 # Observation configuration (RGB sensor for RL)
 observation:
-  width: 640
-  height: 480
+  width: 84
+  height: 84
   fov: 90
 
 # Weather configuration
 weather:
-  cloudiness: 100.0
-  precipitation: 90.0
-  precipitation_deposits: 90.0
-  wind_intensity: 80.0
+  cloudiness: 0.0
+  precipitation: 0.0
+  precipitation_deposits: 0.0
+  wind_intensity: 0.0
   sun_altitude_angle: 40.0
   sun_azimuth_angle: 120.0
-  fog_density: 30.0
-  wetness: 100.0
+  fog_density: 0.0
+  wetness: 0.0

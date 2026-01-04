@@ -163,10 +163,9 @@ class CarlaEnv(gym.Env):
       distance_to_dest = vehicle_transform.location.distance(destination)
 
     return {
-        'location': vehicle_transform.location,
-        'rotation': vehicle_transform.rotation,
+        'location': (vehicle_transform.location.x, vehicle_transform.location.y, vehicle_transform.location.z),
+        'rotation': (vehicle_transform.rotation.pitch, vehicle_transform.rotation.yaw, vehicle_transform.rotation.roll),
         'speed': speed,
-        'destination': destination,
         'distance_to_destination': distance_to_dest,
         'collision': self.collision_occurred
     }

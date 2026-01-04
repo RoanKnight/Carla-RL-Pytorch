@@ -8,6 +8,18 @@ dependencies = [
     "carla==0.9.16",
     "numpy",
     "gymnasium",
-    "stable-baselines3",
-    "PyYAML"
+    "stable-baselines3[extra]",
+    "PyYAML",
+    "torch",
+    "tensorboard"
 ]
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
+torchvision = { index = "pytorch" }
+torchaudio = { index = "pytorch" }
