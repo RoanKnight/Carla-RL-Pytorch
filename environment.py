@@ -6,24 +6,36 @@ import weakref
 from utils import load_config
 
 class CarlaEnv(gym.Env):
-  """Gymnasium wrapper for CARLA simulator, handles CARLA setup, observation/action spaces,
-  and episode lifecycle
-  """
+  """Gymnasium wrapper for CARLA simulator."""
   metadata = {'render_modes': ['human', 'rgb_array']}
 
-  def __init__(self, config_path='config/base.yaml', reward_fn=None):
+  def __init__(self, config_path='config/base.yaml', phase_config_path='config/phase1.yaml', reward_fn=None):
     super().__init__()
     self.config = load_config(config_path)
+    self.phase_config = load_config(phase_config_path)
+    self.weather_presets = load_config('config/presets/weathers.yaml')['presets']
     self.reward_fn = reward_fn
 
     # Episode state
     self.step_count = 0
-    self.max_steps = 1000
+    self.max_steps = self.phase_config.get('episode', {}).get('max_steps', 1000)
     self.collision_occurred = False
+
+    # Spawn/destination tracking, randomised per episode
+    self.spawn_idx = None
+    self.dest_idx = None
+    self.initial_distance = None
+    self.current_map = None
+    self.current_weather = None
+
+    # Previous state tracking for reward calculation
+    self.prev_state = None
+    self.prev_action = None
 
     # CARLA objects to be initialized
     self.client = None
     self.world = None
+    self.carla_map = None
     self.vehicle = None
     self.rgb_camera = None
     self.collision_sensor = None
@@ -41,16 +53,31 @@ class CarlaEnv(gym.Env):
     )
     self.client.set_timeout(self.config['carla']['timeout'])
 
-    self.world = self.client.load_world(self.config['world']['map'])
+    # Load random map from phase distribution
+    maps = self.phase_config['distribution']['maps']
+    self.current_map = np.random.choice(maps)
+    self.world = self.client.load_world(self.current_map)
     self._original_settings = self.world.get_settings()
 
     settings = self.world.get_settings()
-    settings.synchronous_mode = self.config['world']['synchronous_mode']
-    settings.fixed_delta_seconds = 1.0 / 60.0  # 60Hz refresh rate
+    settings.synchronous_mode = True
+    settings.fixed_delta_seconds = 1.0 / 60.0
     self.world.apply_settings(settings)
 
-    self.world.set_weather(carla.WeatherParameters(**self.config['weather']))
-    self.spawn_points = self.world.get_map().get_spawn_points()
+    # Apply random weather from presets
+    self._apply_random_weather()
+
+    self.carla_map = self.world.get_map()
+    self.spawn_points = self.carla_map.get_spawn_points()
+
+  def _apply_random_weather(self):
+    """Apply a random weather preset from phase distribution."""
+    weather_list = self.phase_config['distribution'].get('weathers', ['clear_noon'])
+    if weather_list:
+      preset_name = np.random.choice(weather_list)
+      self.current_weather = preset_name
+      weather_params = self.weather_presets[preset_name]
+      self.world.set_weather(carla.WeatherParameters(**weather_params))
 
   def _setup_spaces(self):
     """Define available actions like steering, throttle, and brake and observation space as RGB image"""
@@ -73,18 +100,14 @@ class CarlaEnv(gym.Env):
     )
 
   def _spawn_vehicle(self):
-    """Spawn the ego vehicle at configured spawn point."""
+    """Spawn the vehicle at the current spawn point, which is randomised in reset."""
     vehicle_blueprint = self.world.get_blueprint_library().filter(
         self.config['vehicle']['model']
     )[0]
 
-    spawn_idx = self.config['vehicle']['spawn_point_index']
-    if spawn_idx >= len(self.spawn_points):
-      spawn_idx = 0
-
     self.vehicle = self.world.spawn_actor(
         vehicle_blueprint,
-        self.spawn_points[spawn_idx]
+        self.spawn_points[self.spawn_idx]
     )
 
   def _setup_sensors(self):
@@ -108,7 +131,8 @@ class CarlaEnv(gym.Env):
     )
 
     current_env_instance = weakref.ref(self)
-    self.rgb_camera.listen(lambda img: CarlaEnv._on_rgb_image(current_env_instance, img))
+    self.rgb_camera.listen(
+        lambda img: CarlaEnv._on_rgb_image(current_env_instance, img))
 
     # Collision Sensor
     collision_bp = self.world.get_blueprint_library().find('sensor.other.collision')
@@ -147,61 +171,102 @@ class CarlaEnv(gym.Env):
 
   def _get_vehicle_state(self):
     """Get current vehicle state for reward calculation and info."""
-    
-    # Get vehicle transform (location and rotation), velocity, and speed
     vehicle_transform = self.vehicle.get_transform()
+    vehicle_location = vehicle_transform.location
     velocity = self.vehicle.get_velocity()
-    speed = np.sqrt(velocity.x**2 + velocity.y **
-                    2 + velocity.z**2) * 3.6
+    speed = np.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2) * 3.6
 
-    # Get destination location
-    dest_idx = self.config['vehicle']['destination_index']
-    destination = self.spawn_points[dest_idx].location if dest_idx < len(
-        self.spawn_points) else None
-    distance_to_dest = None
-    if destination:
-      distance_to_dest = vehicle_transform.location.distance(destination)
+    # Distance to destination
+    destination = self.spawn_points[self.dest_idx].location
+    distance_to_dest = vehicle_location.distance(destination)
+
+    # Lane deviation and off-road detection via Waypoint API
+    waypoint = self.carla_map.get_waypoint(
+        vehicle_location,
+        project_to_road=True,
+        lane_type=carla.LaneType.Driving
+    )
+
+    # If no waypoint, set lane deviation and off-road to maximum penalty
+    if waypoint is None:
+      lane_deviation = 10.0 
+      off_road = True
+    else:
+      # If waypoint is found, calculate lane deviation and off-road status
+      wp_location = waypoint.transform.location
+      lane_deviation = vehicle_location.distance(wp_location)
+      off_road = lane_deviation > (waypoint.lane_width / 2.0)
 
     return {
-        'location': (vehicle_transform.location.x, vehicle_transform.location.y, vehicle_transform.location.z),
+        'location': (vehicle_location.x, vehicle_location.y, vehicle_location.z),
         'rotation': (vehicle_transform.rotation.pitch, vehicle_transform.rotation.yaw, vehicle_transform.rotation.roll),
         'speed': speed,
         'distance_to_destination': distance_to_dest,
-        'collision': self.collision_occurred
+        'collision': self.collision_occurred,
+        'lane_deviation': lane_deviation,
+        'off_road': off_road,
+        'action': self.prev_action,
     }
 
   def _cleanup_actors(self):
     """Destroy all spawned actors."""
-    for actor in [self.collision_sensor, self.rgb_camera, self.vehicle]:
-      if actor is not None:
-        actor.destroy()
+    actors_to_destroy = [self.collision_sensor, self.rgb_camera, self.vehicle]
+    for actor in actors_to_destroy:
+      if actor is not None and actor.is_alive:
+        try:
+          actor.destroy()
+        except Exception as e:
+          print(f"Warning: Failed to destroy actor {actor.id}: {e}")
     self.vehicle = None
     self.rgb_camera = None
     self.collision_sensor = None
     self._rgb_image = None
+    self.prev_state = None
+    self.prev_action = None
 
   def reset(self, seed=None, options=None):
-    """Reset the environment for a new episode."""
+    """Reset the environment for a new episode with randomized spawn/destination/weather."""
     super().reset(seed=seed)
 
     self._cleanup_actors()
+
+    # Randomize weather for new episode
+    self._apply_random_weather()
+
+    # Randomize spawn and destination points
+    num_spawn_points = len(self.spawn_points)
+    self.spawn_idx = self.np_random.integers(0, num_spawn_points)
+    self.dest_idx = self.np_random.integers(0, num_spawn_points)
+    while self.dest_idx == self.spawn_idx:
+      self.dest_idx = self.np_random.integers(0, num_spawn_points)
+
     self._spawn_vehicle()
     self._setup_sensors()
 
+    # Reset episode state
     self.step_count = 0
     self.collision_occurred = False
+    self.prev_state = None
+    self.prev_action = None
+
+    # Calculate initial distance for reference
+    spawn_loc = self.spawn_points[self.spawn_idx].location
+    dest_loc = self.spawn_points[self.dest_idx].location
+    self.initial_distance = spawn_loc.distance(dest_loc)
 
     # Tick to get first observation
     self.world.tick()
 
     observation = self._get_observation()
     info = self._get_vehicle_state()
+    info['initial_distance'] = self.initial_distance
+    info['map'] = self.current_map
+    info['weather'] = self.current_weather
 
     return observation, info
 
   def step(self, action):
     """Execute one environment step."""
-    # Apply action to vehicle
     control = carla.VehicleControl(
         steer=float(action[0]),
         throttle=float(action[1]),
@@ -214,14 +279,18 @@ class CarlaEnv(gym.Env):
     observation = self._get_observation()
     state = self._get_vehicle_state()
 
-    # Reward calculation (delegated to external function)
+    # Reward calculation with previous state for progress/smoothness
     reward = 0.0
     if self.reward_fn is not None:
-      reward = self.reward_fn(state, action)
+      reward = self.reward_fn(state, action, self.prev_state)
+
+    # Store current state/action for next step
+    self.prev_state = state.copy()
+    self.prev_action = action.copy()
 
     # Termination: collision or reached destination
     terminated = self.collision_occurred
-    if state['distance_to_destination'] is not None and state['distance_to_destination'] < 2.0:
+    if state['distance_to_destination'] < 2.0:
       terminated = True
 
     # Episode timeout: max steps reached
@@ -229,6 +298,7 @@ class CarlaEnv(gym.Env):
 
     info = state
     info['step'] = self.step_count
+    info['initial_distance'] = self.initial_distance
 
     return observation, reward, terminated, episode_timeout, info
 

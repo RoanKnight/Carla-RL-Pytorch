@@ -1,38 +1,20 @@
-# Configuration for the CARLA client
+# CARLA client configuration
 carla:
   host: localhost
   port: 2000
   timeout: 10.0
 
-# World configuration
-world:
-  map: Town03
-  synchronous_mode: true
-
 # Vehicle configuration
 vehicle:
   model: vehicle.tesla.model3
-  spawn_point_index: 8
-  destination_index: 44
 
-# Spectator camera configuration (for main.py visualization)
-camera:
-  distance_behind: 6.0
-  height_above: 2.0
-
-# Observation configuration (RGB sensor for RL)
+# Observation configuration for RGB sensor for RL
 observation:
   width: 84
   height: 84
   fov: 90
 
-# Weather configuration
-weather:
-  cloudiness: 0.0
-  precipitation: 0.0
-  precipitation_deposits: 0.0
-  wind_intensity: 0.0
-  sun_altitude_angle: 40.0
-  sun_azimuth_angle: 120.0
-  fog_density: 0.0
-  wetness: 0.0
+# Spectator camera configuration for test visualization
+camera:
+  distance_behind: 6.0
+  height_above: 2.0
