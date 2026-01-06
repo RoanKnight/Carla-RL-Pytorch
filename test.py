@@ -2,19 +2,38 @@ import argparse
 import carla
 from sac_carla import create_env, load_agent
 from utils import load_config
+import glob
+import os
+
+def get_most_recent_checkpoint() -> str:
+  """Find the most recent checkpoint file."""
+  checkpoint_dir = 'logs/checkpoints'
+  if not os.path.exists(checkpoint_dir):
+    raise FileNotFoundError(f"No checkpoint directory found: {checkpoint_dir}")
+  
+  checkpoint_files = glob.glob(os.path.join(checkpoint_dir, "sac_carla_*_steps.zip"))
+  if not checkpoint_files:
+    raise FileNotFoundError(f"No checkpoint files found in {checkpoint_dir}")
+  
+  # Sort by steps (extract number from filename)
+  checkpoint_files.sort(key=lambda x: int(x.split('_')[-2]))
+  return checkpoint_files[-1]
 
 def test(model_path: str = None, episodes: int = 5):
   """Test trained agent with visual feedback."""
   config = load_config('config/base.yaml')
-  model_path = model_path or 'logs/checkpoints/best_model.zip'
+  model_path = model_path or get_most_recent_checkpoint()
 
   print(f"Testing agent from: {model_path}")
   print(f"Episodes: {episodes}\n")
 
-  env = create_env()
+  # Create non-vectorized env for direct access to CARLA
+  env = create_env(vectorize=False)
   agent = load_agent(model_path, env=env)
 
-  world = env.world
+  # Unwrap Monitor to access CarlaEnv directly
+  carla_env = env.unwrapped
+  world = carla_env.world
   metrics = {
       'success': 0,
       'collision': 0,
@@ -25,9 +44,9 @@ def test(model_path: str = None, episodes: int = 5):
 
   for ep in range(episodes):
     obs, info = env.reset()
-    vehicle = env.vehicle
+    vehicle = carla_env.vehicle
     spectator = world.get_spectator()
-    destination = env.spawn_points[env.dest_idx].location
+    destination = carla_env.spawn_points[carla_env.dest_idx].location
 
     episode_finished = False
     episode_reward = 0.0
@@ -64,10 +83,12 @@ def test(model_path: str = None, episodes: int = 5):
     metrics['total_reward'].append(episode_reward)
     metrics['episode_length'].append(episode_steps)
 
-    if terminated and not info.get('collision', False):
-      metrics['success'] += 1
-    elif info.get('collision', False):
+    if info.get('collision', False):
       metrics['collision'] += 1
+    elif info.get('success', False) or info.get('reached_destination', False):
+      metrics['success'] += 1
+    elif info.get('timeout', False) or episode_steps >= getattr(carla_env, 'max_steps', 1000):
+      metrics['timeout'] += 1
     else:
       metrics['timeout'] += 1
 
@@ -91,7 +112,7 @@ def test(model_path: str = None, episodes: int = 5):
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(
       description="Test trained SAC agent on CARLA")
-  parser.add_argument("--model", type=str, help="Path to model checkpoint")
+  parser.add_argument("--model", type=str, help="Path to model checkpoint (defaults to most recent)")
   parser.add_argument("--episodes", type=int, default=5,
                       help="Number of episodes")
 

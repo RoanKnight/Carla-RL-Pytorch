@@ -46,6 +46,10 @@ def compute_reward(state: dict, action: np.ndarray, prev_state: dict = None) -> 
   if state.get('collision', False):
     reward -= WEIGHTS['collision']
 
+  # Fallen off world penalty (same as collision - catastrophic failure)
+  if state.get('fallen_off_world', False):
+    reward -= WEIGHTS['collision']
+
   # Success bonus for reaching destination
   dist = state.get('distance_to_destination')
   if dist is not None and dist < 2.0:

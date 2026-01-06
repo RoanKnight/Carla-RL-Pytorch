@@ -33,7 +33,7 @@ def train():
     remaining_steps = config['training']['total_timesteps']
     print("Starting from scratch")
 
-  callbacks, eval_env = get_callbacks(config)
+  callbacks = get_callbacks(config)
 
   print("Tensorboard: tensorboard --logdir " +
         config['logging']['tensorboard_dir'])
@@ -48,7 +48,6 @@ def train():
   )
 
   env.close()
-  eval_env.close()
 
 if __name__ == '__main__':
   train()

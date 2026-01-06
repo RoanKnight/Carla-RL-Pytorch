@@ -13,12 +13,14 @@ class CarlaEnv(gym.Env):
     super().__init__()
     self.config = load_config(config_path)
     self.phase_config = load_config(phase_config_path)
-    self.weather_presets = load_config('config/presets/weathers.yaml')['presets']
+    self.weather_presets = load_config(
+        'config/presets/weathers.yaml')['presets']
     self.reward_fn = reward_fn
 
     # Episode state
     self.step_count = 0
-    self.max_steps = self.phase_config.get('episode', {}).get('max_steps', 1000)
+    self.max_steps = self.phase_config.get(
+        'episode', {}).get('max_steps', 1000)
     self.collision_occurred = False
 
     # Spawn/destination tracking, randomised per episode
@@ -72,7 +74,8 @@ class CarlaEnv(gym.Env):
 
   def _apply_random_weather(self):
     """Apply a random weather preset from phase distribution."""
-    weather_list = self.phase_config['distribution'].get('weathers', ['clear_noon'])
+    weather_list = self.phase_config['distribution'].get('weathers', [
+                                                         'clear_noon'])
     if weather_list:
       preset_name = np.random.choice(weather_list)
       self.current_weather = preset_name
@@ -80,10 +83,11 @@ class CarlaEnv(gym.Env):
       self.world.set_weather(carla.WeatherParameters(**weather_params))
 
   def _setup_spaces(self):
-    """Define available actions like steering, throttle, and brake and observation space as RGB image"""
+    """Define available actions like steering, and coupled throttle_brake, and observation space as RGB image"""
+    # Action space: steering [-1,1], left/right, throttle_brake [-1,1], forward/backward
     self.action_space = spaces.Box(
-        low=np.array([-1.0, 0.0, 0.0], dtype=np.float32),
-        high=np.array([1.0, 1.0, 1.0], dtype=np.float32),
+        low=np.array([-1.0, -1.0], dtype=np.float32),
+        high=np.array([1.0, 1.0], dtype=np.float32),
         dtype=np.float32
     )
 
@@ -100,15 +104,28 @@ class CarlaEnv(gym.Env):
     )
 
   def _spawn_vehicle(self):
-    """Spawn the vehicle at the current spawn point, which is randomised in reset."""
+    """Spawn the vehicle at the current spawn point, with retry fallback."""
     vehicle_blueprint = self.world.get_blueprint_library().filter(
         self.config['vehicle']['model']
     )[0]
 
-    self.vehicle = self.world.spawn_actor(
+    self.vehicle = self.world.try_spawn_actor(
         vehicle_blueprint,
         self.spawn_points[self.spawn_idx]
     )
+
+    if self.vehicle is None:
+      for _ in range(5):
+        self.spawn_idx = self.np_random.integers(0, len(self.spawn_points))
+        self.vehicle = self.world.try_spawn_actor(
+            vehicle_blueprint,
+            self.spawn_points[self.spawn_idx]
+        )
+        if self.vehicle is not None:
+          break
+
+    if self.vehicle is None:
+      raise RuntimeError("Failed to spawn vehicle after retries")
 
   def _setup_sensors(self):
     """Attach RGB camera and collision sensor to vehicle."""
@@ -174,28 +191,31 @@ class CarlaEnv(gym.Env):
     vehicle_transform = self.vehicle.get_transform()
     vehicle_location = vehicle_transform.location
     velocity = self.vehicle.get_velocity()
-    speed = np.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2) * 3.6
+    speed = np.sqrt(velocity.x**2 + velocity.y**2) * 3.6
 
-    # Distance to destination
     destination = self.spawn_points[self.dest_idx].location
-    distance_to_dest = vehicle_location.distance(destination)
+    distance_to_dest = np.sqrt(
+        (vehicle_location.x - destination.x)**2 +
+        (vehicle_location.y - destination.y)**2
+    )
 
-    # Lane deviation and off-road detection via Waypoint API
     waypoint = self.carla_map.get_waypoint(
         vehicle_location,
         project_to_road=True,
         lane_type=carla.LaneType.Driving
     )
 
-    # If no waypoint, set lane deviation and off-road to maximum penalty
     if waypoint is None:
-      lane_deviation = 10.0 
+      lane_deviation = 5.0
       off_road = True
     else:
-      # If waypoint is found, calculate lane deviation and off-road status
       wp_location = waypoint.transform.location
-      lane_deviation = vehicle_location.distance(wp_location)
-      off_road = lane_deviation > (waypoint.lane_width / 2.0)
+      lane_deviation_2d = np.sqrt(
+          (vehicle_location.x - wp_location.x)**2 +
+          (vehicle_location.y - wp_location.y)**2
+      )
+      lane_deviation = min(lane_deviation_2d, 5.0)
+      off_road = lane_deviation_2d > (waypoint.lane_width / 2.0)
 
     return {
         'location': (vehicle_location.x, vehicle_location.y, vehicle_location.z),
@@ -209,14 +229,46 @@ class CarlaEnv(gym.Env):
     }
 
   def _cleanup_actors(self):
-    """Destroy all spawned actors."""
-    actors_to_destroy = [self.collision_sensor, self.rgb_camera, self.vehicle]
-    for actor in actors_to_destroy:
-      if actor is not None and actor.is_alive:
-        try:
-          actor.destroy()
-        except Exception as e:
-          print(f"Warning: Failed to destroy actor {actor.id}: {e}")
+    """Destroy all spawned actors in safe order: stop sensors, tick, destroy."""
+    if self.rgb_camera is not None:
+      try:
+        self.rgb_camera.stop()
+      except:
+        pass
+
+    if self.collision_sensor is not None:
+      try:
+        self.collision_sensor.stop()
+      except:
+        pass
+
+    if self.world is not None:
+      try:
+        self.world.tick()
+      except:
+        pass
+
+    if self.collision_sensor is not None:
+      try:
+        if self.collision_sensor.is_alive:
+          self.collision_sensor.destroy()
+      except:
+        pass
+
+    if self.rgb_camera is not None:
+      try:
+        if self.rgb_camera.is_alive:
+          self.rgb_camera.destroy()
+      except:
+        pass
+
+    if self.vehicle is not None:
+      try:
+        if self.vehicle.is_alive:
+          self.vehicle.destroy()
+      except:
+        pass
+
     self.vehicle = None
     self.rgb_camera = None
     self.collision_sensor = None
@@ -267,10 +319,14 @@ class CarlaEnv(gym.Env):
 
   def step(self, action):
     """Execute one environment step."""
+    # Convert 2D action to CARLA controls, steering [-1,1], throttle_brake [-1,1]
+    throttle = max(0.0, float(action[1]))
+    brake = max(0.0, -float(action[1]))
+
     control = carla.VehicleControl(
         steer=float(action[0]),
-        throttle=float(action[1]),
-        brake=float(action[2])
+        throttle=throttle,
+        brake=brake
     )
     self.vehicle.apply_control(control)
     self.world.tick()

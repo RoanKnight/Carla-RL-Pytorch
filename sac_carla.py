@@ -1,19 +1,27 @@
 from pathlib import Path
 from stable_baselines3 import SAC
-from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, EvalCallback
+from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecTransposeImage
 from environment import CarlaEnv
 from reward import compute_reward
 
-def create_env(phase_config_path: str = 'config/phase1.yaml') -> CarlaEnv:
+def create_env(phase_config_path: str = 'config/phase1.yaml', vectorize: bool = True):
   """Create CARLA environment with reward function and phase config."""
-  env = CarlaEnv(
-      config_path='config/base.yaml',
-      phase_config_path=phase_config_path,
-      reward_fn=compute_reward
-  )
-  env = Monitor(env)
+  def _make_env():
+    base = CarlaEnv(
+        config_path='config/base.yaml',
+        phase_config_path=phase_config_path,
+        reward_fn=compute_reward
+    )
+    return Monitor(base)
+
+  if not vectorize:
+    return _make_env()
+
+  # Wrap for training: DummyVecEnv -> VecTransposeImage
+  env = DummyVecEnv([_make_env])
+  env = VecTransposeImage(env)
   return env
 
 def create_agent(env: CarlaEnv, config: dict) -> SAC:
@@ -33,8 +41,8 @@ def create_agent(env: CarlaEnv, config: dict) -> SAC:
   )
   return agent
 
-def get_callbacks(config: dict, phase_config_path: str = 'config/phase1.yaml') -> tuple:
-  """Create callbacks for training and evaluation."""
+def get_callbacks(config: dict, phase_config_path: str = 'config/phase1.yaml') -> list:
+  """Create callbacks for training: checkpointing and logging."""
   Path(config['logging']['tensorboard_dir']).mkdir(parents=True, exist_ok=True)
   Path(config['logging']['checkpoint_dir']).mkdir(parents=True, exist_ok=True)
 
@@ -44,20 +52,8 @@ def get_callbacks(config: dict, phase_config_path: str = 'config/phase1.yaml') -
       name_prefix="sac_carla",
   )
 
-  eval_env = DummyVecEnv([lambda: create_env(phase_config_path)])
-  eval_env = VecTransposeImage(eval_env)
-
-  eval_cb = EvalCallback(
-      eval_env,
-      best_model_save_path=config['logging']['checkpoint_dir'],
-      log_path=config['logging']['tensorboard_dir'],
-      eval_freq=config['training']['eval_freq'],
-      n_eval_episodes=5,
-      deterministic=True,
-  )
-
   log_cb = EpisodeLogger(log_interval=config['training']['log_interval'])
-  return [checkpoint_cb, eval_cb, log_cb], eval_env
+  return [checkpoint_cb, log_cb]
 
 def load_agent(model_path: str, env: CarlaEnv = None) -> SAC:
   """Load trained SAC agent from checkpoint."""
