@@ -10,33 +10,36 @@ def train():
       f"Training SAC on CARLA - Phase {config['phase']}: {config['name']}")
   logging.info(f"Total timesteps: {config['training']['total_timesteps']}")
 
-  env = create_env()
+  env = create_env(mode='train')
+  try:
+    # Check for existing checkpoints and resume if found
+    checkpoint_path, checkpoint_steps = find_latest_checkpoint(
+        config['logging']['checkpoint_dir'])
 
-  # Check for existing checkpoints and resume if found
-  checkpoint_path, checkpoint_steps = find_latest_checkpoint(
-      config['logging']['checkpoint_dir'])
+    if checkpoint_path:
+      agent = load_agent(checkpoint_path, env=env)
+      remaining_steps = config['training']['total_timesteps'] - checkpoint_steps
+      logging.info(f"Found checkpoint at {checkpoint_steps} steps")
+      logging.info(f"Resuming from {checkpoint_steps} steps")
+    else:
+      agent = create_agent(env, config)
+      remaining_steps = config['training']['total_timesteps']
+      logging.info("Starting from scratch")
 
-  if checkpoint_path:
-    agent = load_agent(checkpoint_path, env=env)
-    remaining_steps = config['training']['total_timesteps'] - checkpoint_steps
-    logging.info(f"Found checkpoint at {checkpoint_steps} steps")
-    logging.info(f"Resuming from {checkpoint_steps} steps")
-  else:
-    agent = create_agent(env, config)
-    remaining_steps = config['training']['total_timesteps']
-    logging.info("Starting from scratch")
+    callbacks = get_callbacks(config)
 
-  callbacks = get_callbacks(config)
-
-  agent.learn(
-      total_timesteps=remaining_steps,
-      callback=callbacks,
-      log_interval=config['training']['log_interval'],
-      progress_bar=True,
-      reset_num_timesteps=False,
-  )
-
-  env.close()
+    agent.learn(
+        total_timesteps=remaining_steps,
+        callback=callbacks,
+        log_interval=config['training']['log_interval'],
+        progress_bar=True,
+        reset_num_timesteps=False,
+    )
+  except KeyboardInterrupt:
+    # Make Ctrl+C a clean, expected shutdown (still runs env.close() in finally)
+    logging.info("Training interrupted by user (KeyboardInterrupt). Cleaning up...")
+  finally:
+    env.close()
 
 if __name__ == '__main__':
   train()

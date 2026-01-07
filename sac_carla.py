@@ -7,13 +7,14 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecTransposeImage
 from environment import CarlaEnv
 from reward import compute_reward
 
-def create_env(phase_config_path: str = 'config/phase1.yaml', vectorize: bool = True):
+def create_env(phase_config_path: str = 'config/phase1.yaml', vectorize: bool = True, mode: str = 'train'):
   """Create CARLA environment with reward function and phase config."""
   def _make_env():
     base = CarlaEnv(
         config_path='config/base.yaml',
         phase_config_path=phase_config_path,
-        reward_fn=compute_reward
+        reward_fn=compute_reward,
+        mode=mode
     )
     return Monitor(base)
 
@@ -85,7 +86,6 @@ class EpisodeLogger(BaseCallback):
     if episode_finished:
       self.episode_count += 1
       if self.episode_count % self.log_interval == 0:
-        # Use print instead of logging to avoid interfering with progress bar
         print(
             f"Episode {self.episode_count:4d} | "
             f"Reward {self.current_episode_reward:8.2f} | "

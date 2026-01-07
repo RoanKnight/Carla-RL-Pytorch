@@ -9,23 +9,37 @@ class CarlaEnv(gym.Env):
   """Gymnasium wrapper for CARLA simulator."""
   metadata = {'render_modes': ['human', 'rgb_array']}
 
-  def __init__(self, config_path='config/base.yaml', phase_config_path='config/phase1.yaml', reward_fn=None):
+  def __init__(self, config_path='config/base.yaml', phase_config_path='config/phase1.yaml', reward_fn=None, mode=None):
     super().__init__()
     self.config = load_config(config_path)
     self.phase_config = load_config(phase_config_path)
     self.weather_presets = load_config(
         'config/presets/weathers.yaml')['presets']
     self.reward_fn = reward_fn
+    self.mode = mode
     
     # Extract reward configuration for passing to reward function
     self.reward_weights = self.phase_config.get('reward_weights', {})
     self.speed_targets = self.phase_config.get('speed_targets', {})
+    
+    # Map randomization frequency based on mode
+    map_config = self.phase_config.get('map_randomization', {})
+    if self.mode == 'train':
+      self.map_change_frequency = map_config.get('train_map_randomness_frequency', 1)
+    elif self.mode == 'test':
+      self.map_change_frequency = map_config.get('test_map_randomness_frequency', 1)
+    else:
+      raise ValueError(f"mode must be 'train' or 'test', got '{self.mode}'")
+    
+    if self.map_change_frequency < 1:
+      raise ValueError(f"Map change frequency must be >= 1, got {self.map_change_frequency}")
 
     # Episode state
     self.step_count = 0
     self.max_steps = self.phase_config.get(
         'episode', {}).get('max_steps', 1000)
     self.collision_occurred = False
+    self.episode_count = 0
 
     # Spawn/destination tracking, randomised per episode
     self.spawn_idx = None
@@ -256,6 +270,30 @@ class CarlaEnv(gym.Env):
     super().reset(seed=seed)
 
     self._cleanup_actors()
+
+    # Increment episode counter
+    self.episode_count += 1
+
+    # Check if we should resample the map based on frequency
+    if self.episode_count % self.map_change_frequency == 0:
+      maps = self.phase_config['distribution']['maps']
+      new_map = np.random.choice(maps)
+      
+      # Only reload world if map actually changed
+      if new_map != self.current_map:
+        self.current_map = new_map
+        self.world = self.client.load_world(self.current_map)
+        
+        # Reapply synchronous settings after load_world
+        settings = self.world.get_settings()
+        settings.synchronous_mode = True
+        settings.fixed_delta_seconds = 1.0 / 60.0
+        self.world.apply_settings(settings)
+        self._original_settings = self.world.get_settings()
+        
+        # Refresh map-dependent handles
+        self.carla_map = self.world.get_map()
+        self.spawn_points = self.carla_map.get_spawn_points()
 
     # Randomize weather for new episode
     self._apply_random_weather()

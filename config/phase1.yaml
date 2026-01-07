@@ -4,12 +4,17 @@ name: "Learning basic driving skills on the simpler maps without traffic and wea
 # Training configuration
 training:
   total_timesteps: 500000  
-  eval_freq: 50000
+  eval_freq: 10000
   log_interval: 1
 
 # Episode configuration
 episode:
   max_steps: 1000
+
+# Map randomization frequency in episodes
+map_randomization:
+  train_map_randomness_frequency: 5
+  test_map_randomness_frequency: 1
 
 # SAC hyperparameters
 sac:
@@ -21,7 +26,7 @@ sac:
   ent_coef: auto
   train_freq: 1
   gradient_steps: 1
-  learning_starts: 10000
+  learning_starts: 5000
 
 # Logging configuration
 logging:
