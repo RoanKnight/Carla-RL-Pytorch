@@ -6,7 +6,6 @@ training:
   total_timesteps: 500000  
   eval_freq: 50000
   log_interval: 1
-  seed: 42
 
 # Episode configuration
 episode:
@@ -26,8 +25,7 @@ sac:
 
 # Logging configuration
 logging:
-  tensorboard_dir: logs/tensorboard
-  checkpoint_dir: logs/checkpoints
+  checkpoint_dir: checkpoints
   experiment_name: phase1_basic_driving
 
 # Training distribution

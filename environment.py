@@ -16,6 +16,10 @@ class CarlaEnv(gym.Env):
     self.weather_presets = load_config(
         'config/presets/weathers.yaml')['presets']
     self.reward_fn = reward_fn
+    
+    # Extract reward configuration for passing to reward function
+    self.reward_weights = self.phase_config.get('reward_weights', {})
+    self.speed_targets = self.phase_config.get('speed_targets', {})
 
     # Episode state
     self.step_count = 0
@@ -225,50 +229,21 @@ class CarlaEnv(gym.Env):
         'collision': self.collision_occurred,
         'lane_deviation': lane_deviation,
         'off_road': off_road,
-        'action': self.prev_action,
     }
 
   def _cleanup_actors(self):
-    """Destroy all spawned actors in safe order: stop sensors, tick, destroy."""
+    """Destroy all spawned actors in safe order to prevent memory leaks and stop callbacks: stop sensors, tick, destroy."""
     if self.rgb_camera is not None:
-      try:
-        self.rgb_camera.stop()
-      except:
-        pass
-
+      self.rgb_camera.stop()
     if self.collision_sensor is not None:
-      try:
-        self.collision_sensor.stop()
-      except:
-        pass
+      self.collision_sensor.stop()
+    
+    # Destroy actors
+    for actor in [self.collision_sensor, self.rgb_camera, self.vehicle]:
+      if actor is not None and actor.is_alive:
+        actor.destroy()
 
-    if self.world is not None:
-      try:
-        self.world.tick()
-      except:
-        pass
-
-    if self.collision_sensor is not None:
-      try:
-        if self.collision_sensor.is_alive:
-          self.collision_sensor.destroy()
-      except:
-        pass
-
-    if self.rgb_camera is not None:
-      try:
-        if self.rgb_camera.is_alive:
-          self.rgb_camera.destroy()
-      except:
-        pass
-
-    if self.vehicle is not None:
-      try:
-        if self.vehicle.is_alive:
-          self.vehicle.destroy()
-      except:
-        pass
-
+    # Reset references
     self.vehicle = None
     self.rgb_camera = None
     self.collision_sensor = None
@@ -298,8 +273,6 @@ class CarlaEnv(gym.Env):
     # Reset episode state
     self.step_count = 0
     self.collision_occurred = False
-    self.prev_state = None
-    self.prev_action = None
 
     # Calculate initial distance for reference
     spawn_loc = self.spawn_points[self.spawn_idx].location
@@ -338,7 +311,11 @@ class CarlaEnv(gym.Env):
     # Reward calculation with previous state for progress/smoothness
     reward = 0.0
     if self.reward_fn is not None:
-      reward = self.reward_fn(state, action, self.prev_state)
+      # Pass action and prev_action separately; state is physical state only
+      prev_action = self.prev_action if self.prev_action is not None else np.zeros(
+          2, dtype=np.float32)
+      reward = self.reward_fn(state, action, self.prev_state, prev_action,
+                              self.reward_weights, self.speed_targets)
 
     # Store current state/action for next step
     self.prev_state = state.copy()

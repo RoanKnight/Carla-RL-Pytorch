@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from stable_baselines3 import SAC
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
@@ -24,8 +25,16 @@ def create_env(phase_config_path: str = 'config/phase1.yaml', vectorize: bool = 
   env = VecTransposeImage(env)
   return env
 
-def create_agent(env: CarlaEnv, config: dict) -> SAC:
-  """Create SAC agent with config parameters."""
+def create_agent(env, config: dict) -> SAC:
+  """Create SAC agent with config parameters.
+
+  Args:
+    env: Gymnasium environment, either vectorized or raw
+    config: Configuration dictionary with SAC hyperparameters
+
+  Returns:
+    Initialized SAC agent
+  """
   agent = SAC(
       policy="CnnPolicy",
       env=env,
@@ -36,14 +45,12 @@ def create_agent(env: CarlaEnv, config: dict) -> SAC:
       tau=config['sac']['tau'],
       ent_coef=config['sac']['ent_coef'],
       learning_starts=config['sac']['learning_starts'],
-      tensorboard_log=config['logging']['tensorboard_dir'],
       verbose=0,
   )
   return agent
 
-def get_callbacks(config: dict, phase_config_path: str = 'config/phase1.yaml') -> list:
+def get_callbacks(config: dict) -> list:
   """Create callbacks for training: checkpointing and logging."""
-  Path(config['logging']['tensorboard_dir']).mkdir(parents=True, exist_ok=True)
   Path(config['logging']['checkpoint_dir']).mkdir(parents=True, exist_ok=True)
 
   checkpoint_cb = CheckpointCallback(
@@ -78,10 +85,12 @@ class EpisodeLogger(BaseCallback):
     if episode_finished:
       self.episode_count += 1
       if self.episode_count % self.log_interval == 0:
+        # Use print instead of logging to avoid interfering with progress bar
         print(
             f"Episode {self.episode_count:4d} | "
             f"Reward {self.current_episode_reward:8.2f} | "
-            f"Steps {self.current_episode_steps:4d}"
+            f"Steps {self.current_episode_steps:4d}",
+            flush=True
         )
       self.current_episode_reward = 0.0
       self.current_episode_steps = 0

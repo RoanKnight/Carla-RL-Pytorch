@@ -1,31 +1,21 @@
 import argparse
 import carla
+import logging
 from sac_carla import create_env, load_agent
-from utils import load_config
-import glob
-import os
-
-def get_most_recent_checkpoint() -> str:
-  """Find the most recent checkpoint file."""
-  checkpoint_dir = 'logs/checkpoints'
-  if not os.path.exists(checkpoint_dir):
-    raise FileNotFoundError(f"No checkpoint directory found: {checkpoint_dir}")
-  
-  checkpoint_files = glob.glob(os.path.join(checkpoint_dir, "sac_carla_*_steps.zip"))
-  if not checkpoint_files:
-    raise FileNotFoundError(f"No checkpoint files found in {checkpoint_dir}")
-  
-  # Sort by steps (extract number from filename)
-  checkpoint_files.sort(key=lambda x: int(x.split('_')[-2]))
-  return checkpoint_files[-1]
+from utils import load_config, setup_logging, find_latest_checkpoint
 
 def test(model_path: str = None, episodes: int = 5):
   """Test trained agent with visual feedback."""
+  setup_logging()
   config = load_config('config/base.yaml')
-  model_path = model_path or get_most_recent_checkpoint()
 
-  print(f"Testing agent from: {model_path}")
-  print(f"Episodes: {episodes}\n")
+  if not model_path:
+    model_path, _ = find_latest_checkpoint('checkpoints')
+    if not model_path:
+      raise FileNotFoundError("No checkpoint found in 'checkpoints' directory")
+
+  logging.info(f"Testing agent from: {model_path}")
+  logging.info(f"Episodes: {episodes}")
 
   # Create non-vectorized env for direct access to CARLA
   env = create_env(vectorize=False)
@@ -53,11 +43,11 @@ def test(model_path: str = None, episodes: int = 5):
     episode_steps = 0
 
     while not episode_finished:
-      # Spectator camera following vehicle
+      # Spectator camera following vehicle (preserve spectator rotation for free look)
       spectator_transform = spectator.get_transform()
-      transform = vehicle.get_transform()
+      vehicle_transform = vehicle.get_transform()
       forward = spectator_transform.get_forward_vector()
-      location = transform.location - forward * config['camera']['distance_behind'] + \
+      location = vehicle_transform.location - forward * config['camera']['distance_behind'] + \
           carla.Vector3D(z=config['camera']['height_above'])
       spectator.set_transform(carla.Transform(
           location, spectator_transform.rotation))
@@ -83,36 +73,37 @@ def test(model_path: str = None, episodes: int = 5):
     metrics['total_reward'].append(episode_reward)
     metrics['episode_length'].append(episode_steps)
 
+    # Classify episode outcome based on info dict and episode state
     if info.get('collision', False):
       metrics['collision'] += 1
-    elif info.get('success', False) or info.get('reached_destination', False):
-      metrics['success'] += 1
-    elif info.get('timeout', False) or episode_steps >= getattr(carla_env, 'max_steps', 1000):
+    elif episode_steps >= carla_env.max_steps:
       metrics['timeout'] += 1
     else:
-      metrics['timeout'] += 1
+      # Episode ended without collision or timeout => reached destination
+      metrics['success'] += 1
 
-    print(
+    logging.info(
         f"Episode {ep + 1}: Reward={episode_reward:8.2f}, Steps={episode_steps:4d}")
 
   # Summary
   env.close()
-  print("\n" + "=" * 50)
-  print("SUMMARY")
-  print("=" * 50)
-  print(
+  logging.info("=" * 50)
+  logging.info("TEST SUMMARY")
+  logging.info("=" * 50)
+  logging.info(
       f"Success:  {metrics['success']}/{episodes} ({100 * metrics['success'] / episodes:.1f}%)")
-  print(f"Collision: {metrics['collision']}/{episodes}")
-  print(f"Timeout:   {metrics['timeout']}/{episodes}")
-  print(
+  logging.info(f"Collision: {metrics['collision']}/{episodes}")
+  logging.info(f"Timeout:   {metrics['timeout']}/{episodes}")
+  logging.info(
       f"Avg Reward: {sum(metrics['total_reward']) / len(metrics['total_reward']):.2f}")
-  print(
+  logging.info(
       f"Avg Steps:  {sum(metrics['episode_length']) / len(metrics['episode_length']):.1f}")
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(
       description="Test trained SAC agent on CARLA")
-  parser.add_argument("--model", type=str, help="Path to model checkpoint (defaults to most recent)")
+  parser.add_argument(
+      "--model", type=str, help="Path to model checkpoint (defaults to most recent)")
   parser.add_argument("--episodes", type=int, default=5,
                       help="Number of episodes")
 

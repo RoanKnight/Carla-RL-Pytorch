@@ -10,8 +10,7 @@ dependencies = [
     "gymnasium",
     "stable-baselines3[extra]",
     "PyYAML",
-    "torch",
-    "tensorboard"
+    "torch"
 ]
 
 [[tool.uv.index]]
