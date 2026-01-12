@@ -37,7 +37,7 @@ def create_agent(env, config: dict) -> SAC:
     Initialized SAC agent
   """
   agent = SAC(
-      policy="CnnPolicy",
+      policy="MultiInputPolicy",
       env=env,
       learning_rate=config['sac']['learning_rate'],
       buffer_size=config['sac']['buffer_size'],

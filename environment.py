@@ -1,7 +1,11 @@
+import sys
+sys.path.append(r'C:\Carla\PythonAPI\carla')
+
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import carla
+from agents.navigation.global_route_planner import GlobalRoutePlanner
 import weakref
 from utils import load_config
 
@@ -17,22 +21,19 @@ class CarlaEnv(gym.Env):
         'config/presets/weathers.yaml')['presets']
     self.reward_fn = reward_fn
     self.mode = mode
-    
+
     # Extract reward configuration for passing to reward function
     self.reward_weights = self.phase_config.get('reward_weights', {})
     self.speed_targets = self.phase_config.get('speed_targets', {})
-    
+
     # Map randomization frequency based on mode
     map_config = self.phase_config.get('map_randomization', {})
     if self.mode == 'train':
-      self.map_change_frequency = map_config.get('train_map_randomness_frequency', 1)
+      self.map_change_frequency = map_config.get(
+          'train_map_randomness_frequency', 1)
     elif self.mode == 'test':
-      self.map_change_frequency = map_config.get('test_map_randomness_frequency', 1)
-    else:
-      raise ValueError(f"mode must be 'train' or 'test', got '{self.mode}'")
-    
-    if self.map_change_frequency < 1:
-      raise ValueError(f"Map change frequency must be >= 1, got {self.map_change_frequency}")
+      self.map_change_frequency = map_config.get(
+          'test_map_randomness_frequency', 1)
 
     # Episode state
     self.step_count = 0
@@ -47,6 +48,11 @@ class CarlaEnv(gym.Env):
     self.initial_distance = None
     self.current_map = None
     self.current_weather = None
+
+    # Route planning
+    self.route_planner = None
+    self.route = []
+    self.current_waypoint_idx = 0
 
     # Previous state tracking for reward calculation
     self.prev_state = None
@@ -90,6 +96,10 @@ class CarlaEnv(gym.Env):
     self.carla_map = self.world.get_map()
     self.spawn_points = self.carla_map.get_spawn_points()
 
+    # Initialize route planner
+    self.route_planner = GlobalRoutePlanner(
+        self.carla_map, sampling_resolution=2.0)
+
   def _apply_random_weather(self):
     """Apply a random weather preset from phase distribution."""
     weather_list = self.phase_config['distribution'].get('weathers', [
@@ -101,7 +111,7 @@ class CarlaEnv(gym.Env):
       self.world.set_weather(carla.WeatherParameters(**weather_params))
 
   def _setup_spaces(self):
-    """Define available actions like steering, and coupled throttle_brake, and observation space as RGB image"""
+    """Define available actions like steering, and coupled throttle_brake, and observation space as Dict with image + goal."""
     # Action space: steering [-1,1], left/right, throttle_brake [-1,1], forward/backward
     self.action_space = spaces.Box(
         low=np.array([-1.0, -1.0], dtype=np.float32),
@@ -109,17 +119,25 @@ class CarlaEnv(gym.Env):
         dtype=np.float32
     )
 
-    # Observation: RGB image from front camera
+    # Observation: Dict with RGB image from front camera and goal vector
     obs_config = self.config.get('observation', {})
     width = obs_config.get('width', 640)
     height = obs_config.get('height', 480)
 
-    self.observation_space = spaces.Box(
-        low=0,
-        high=255,
-        shape=(height, width, 3),
-        dtype=np.uint8
-    )
+    self.observation_space = spaces.Dict({
+        "image": spaces.Box(
+            low=0,
+            high=255,
+            shape=(height, width, 3),
+            dtype=np.uint8
+        ),
+        "goal": spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(2,),
+            dtype=np.float32
+        )
+    })
 
   def _spawn_vehicle(self):
     """Spawn the vehicle at the current spawn point, with retry fallback."""
@@ -198,11 +216,59 @@ class CarlaEnv(gym.Env):
       return
     self.collision_occurred = True
 
+  def _compute_goal_vector(self):
+    """Compute ego-frame goal vector to next waypoint.
+
+    Returns:
+      goal: [forward_distance, lateral_offset] in meters
+            forward_distance: positive = ahead, negative = behind
+            lateral_offset: positive = right, negative = left
+    """
+
+    # If no route or no waypoints, return zero vector
+    if len(self.route) == 0 or self.current_waypoint_idx >= len(self.route):
+      return np.array([0.0, 0.0], dtype=np.float32)
+
+    vehicle_transform = self.vehicle.get_transform()
+    vehicle_location = vehicle_transform.location
+    vehicle_rotation = vehicle_transform.rotation
+
+    # Get current target waypoint
+    target_waypoint_loc = self.route[self.current_waypoint_idx][0].transform.location
+
+    # World-frame delta
+    dx = target_waypoint_loc.x - vehicle_location.x
+    dy = target_waypoint_loc.y - vehicle_location.y
+
+    # Convert vehicle yaw to radians
+    yaw = np.radians(vehicle_rotation.yaw)
+
+    # Vehicle's forward vector: direction it's pointing
+    forward_x = np.cos(yaw)
+    forward_y = np.sin(yaw)
+
+    # Vehicle's right vector: perpendicular to forward
+    right_x = np.cos(yaw + np.pi / 2)
+    right_y = np.sin(yaw + np.pi / 2)
+
+    # Project world delta onto vehicle's forward and right axes
+    forward_distance = dx * forward_x + dy * forward_y
+    lateral_offset = dx * right_x + dy * right_y
+
+    return np.array([forward_distance, lateral_offset], dtype=np.float32)
+
   def _get_observation(self):
-    """Return current RGB observation."""
-    if self._rgb_image is None:
-      return np.zeros(self.observation_space.shape, dtype=np.uint8)
-    return self._rgb_image.copy()
+    """Return Dict observation with image and goal vector."""
+    image = self._rgb_image.copy() if self._rgb_image is not None else np.zeros(
+        (84, 84, 3), dtype=np.uint8)
+
+    # Compute goal vector to next waypoint
+    goal = self._compute_goal_vector()
+
+    return {
+        "image": image,
+        "goal": goal
+    }
 
   def _get_vehicle_state(self):
     """Get current vehicle state for reward calculation and info."""
@@ -216,6 +282,15 @@ class CarlaEnv(gym.Env):
         (vehicle_location.x - destination.x)**2 +
         (vehicle_location.y - destination.y)**2
     )
+
+    # Compute distance to current waypoint
+    waypoint_distance = 0.0
+    if len(self.route) > 0 and self.current_waypoint_idx < len(self.route):
+      current_waypoint_loc = self.route[self.current_waypoint_idx][0].transform.location
+      waypoint_distance = np.sqrt(
+          (vehicle_location.x - current_waypoint_loc.x)**2 +
+          (vehicle_location.y - current_waypoint_loc.y)**2
+      )
 
     waypoint = self.carla_map.get_waypoint(
         vehicle_location,
@@ -240,6 +315,8 @@ class CarlaEnv(gym.Env):
         'rotation': (vehicle_transform.rotation.pitch, vehicle_transform.rotation.yaw, vehicle_transform.rotation.roll),
         'speed': speed,
         'distance_to_destination': distance_to_dest,
+        'waypoint_distance': waypoint_distance,
+        'current_waypoint_idx': self.current_waypoint_idx,
         'collision': self.collision_occurred,
         'lane_deviation': lane_deviation,
         'off_road': off_road,
@@ -251,7 +328,7 @@ class CarlaEnv(gym.Env):
       self.rgb_camera.stop()
     if self.collision_sensor is not None:
       self.collision_sensor.stop()
-    
+
     # Destroy actors
     for actor in [self.collision_sensor, self.rgb_camera, self.vehicle]:
       if actor is not None and actor.is_alive:
@@ -278,22 +355,26 @@ class CarlaEnv(gym.Env):
     if self.episode_count % self.map_change_frequency == 0:
       maps = self.phase_config['distribution']['maps']
       new_map = np.random.choice(maps)
-      
+
       # Only reload world if map actually changed
       if new_map != self.current_map:
         self.current_map = new_map
         self.world = self.client.load_world(self.current_map)
-        
+
         # Reapply synchronous settings after load_world
         settings = self.world.get_settings()
         settings.synchronous_mode = True
         settings.fixed_delta_seconds = 1.0 / 60.0
         self.world.apply_settings(settings)
         self._original_settings = self.world.get_settings()
-        
+
         # Refresh map-dependent handles
         self.carla_map = self.world.get_map()
         self.spawn_points = self.carla_map.get_spawn_points()
+
+        # Recreates route planner for new map
+        self.route_planner = GlobalRoutePlanner(
+            self.carla_map, sampling_resolution=2.0)
 
     # Randomize weather for new episode
     self._apply_random_weather()
@@ -316,6 +397,10 @@ class CarlaEnv(gym.Env):
     spawn_loc = self.spawn_points[self.spawn_idx].location
     dest_loc = self.spawn_points[self.dest_idx].location
     self.initial_distance = spawn_loc.distance(dest_loc)
+
+    # Compute route from spawn to destination
+    self.route = self.route_planner.trace_route(spawn_loc, dest_loc)
+    self.current_waypoint_idx = 0
 
     # Tick to get first observation
     self.world.tick()
@@ -345,6 +430,16 @@ class CarlaEnv(gym.Env):
 
     observation = self._get_observation()
     state = self._get_vehicle_state()
+
+    # Update route progress: advance to next waypoint if close enough
+    if len(self.route) > 0 and self.current_waypoint_idx < len(self.route):
+      vehicle_location = self.vehicle.get_transform().location
+      current_waypoint_loc = self.route[self.current_waypoint_idx][0].transform.location
+      distance_to_waypoint = vehicle_location.distance(current_waypoint_loc)
+
+      # Advance to next waypoint if within 5 meters
+      if distance_to_waypoint < 5.0 and self.current_waypoint_idx < len(self.route) - 1:
+        self.current_waypoint_idx += 1
 
     # Reward calculation with previous state for progress/smoothness
     reward = 0.0

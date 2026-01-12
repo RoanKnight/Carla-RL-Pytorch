@@ -5,7 +5,7 @@ def compute_reward(state: dict, action: np.ndarray, prev_state: dict,
   """Compute dense reward from state/action. All parameters are explicit (no global state).
   
   Args:
-    state: Current vehicle state (speed, distance_to_destination, collision, etc.)
+    state: Current vehicle state (speed, waypoint_distance, collision, etc.)
     action: Current action (steering, throttle/brake)
     prev_state: Previous vehicle state
     prev_action: Previous action (for smoothness penalty)
@@ -17,13 +17,21 @@ def compute_reward(state: dict, action: np.ndarray, prev_state: dict,
   """
   reward = 0.0
   
-  # Progress toward destination
+  # Waypoint progress: reward getting closer to current waypoint
   if prev_state is not None:
-    prev_dist = prev_state.get('distance_to_destination')
-    curr_dist = state.get('distance_to_destination')
-    if prev_dist is not None and curr_dist is not None:
-      progress = prev_dist - curr_dist
-      reward += weights['progress'] * progress
+    prev_wp_dist = prev_state.get('waypoint_distance')
+    curr_wp_dist = state.get('waypoint_distance')
+    if prev_wp_dist is not None and curr_wp_dist is not None:
+      waypoint_progress = prev_wp_dist - curr_wp_dist
+      reward += weights['waypoint_progress'] * waypoint_progress
+  
+  # Waypoint reached: reward for advancing to next waypoint
+  if prev_state is not None:
+    prev_wp_idx = prev_state.get('current_waypoint_idx', 0)
+    curr_wp_idx = state.get('current_waypoint_idx', 0)
+    waypoints_advanced = curr_wp_idx - prev_wp_idx
+    if waypoints_advanced > 0:
+      reward += weights['waypoint_reached'] * waypoints_advanced
 
   # Speed control to stay within the targeted speed range
   speed = state.get('speed', 0.0)
@@ -48,6 +56,11 @@ def compute_reward(state: dict, action: np.ndarray, prev_state: dict,
   if prev_state is not None and prev_action is not None:
     steering_change = abs(action[0] - prev_action[0])
     reward -= weights['steering_smoothness'] * steering_change
+
+  # Throttle/brake smoothness to penalize sudden acceleration or braking
+  if prev_state is not None and prev_action is not None:
+    throttle_brake_change = abs(action[1] - prev_action[1])
+    reward -= weights['throttle_brake_smoothness'] * throttle_brake_change
 
   # Collision penalty
   if state.get('collision', False):
