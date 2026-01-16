@@ -3,7 +3,7 @@ name: "Learning basic driving skills on the simpler maps without traffic and wea
 
 # Training configuration
 training:
-  total_timesteps: 5000000 
+  total_timesteps: 6000000
   eval_freq: 50000
   log_interval: 1
 
@@ -31,7 +31,6 @@ sac:
 # Logging configuration
 logging:
   checkpoint_dir: checkpoints
-  experiment_name: phase1_basic_driving
 
 # Training distribution
 distribution:
@@ -56,11 +55,11 @@ reward_weights:
   steering_smoothness: 0.2
   throttle_brake_smoothness: 0.1
   success: 100.0
+  traffic_light_compliance: 0.5
+  red_light_violation: 300.0
+  holding_at_red: 0.5
 
 # Speed targets for driving
 speed_targets:
   min: 20.0
   max: 40.0
-
-# Success threshold
-success_threshold: 0.70

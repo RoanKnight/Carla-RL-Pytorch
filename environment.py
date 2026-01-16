@@ -136,6 +136,18 @@ class CarlaEnv(gym.Env):
             high=np.inf,
             shape=(2,),
             dtype=np.float32
+        ),
+        "traffic_light": spaces.Box(
+            low=0,
+            high=1,
+            shape=(4,),
+            dtype=np.float32
+        ),
+        "distance_to_stop": spaces.Box(
+            low=0,
+            high=1,
+            shape=(1,),
+            dtype=np.float32
         )
     })
 
@@ -217,15 +229,7 @@ class CarlaEnv(gym.Env):
     self.collision_occurred = True
 
   def _compute_goal_vector(self):
-    """Compute ego-frame goal vector to next waypoint.
-
-    Returns:
-      goal: [forward_distance, lateral_offset] in meters
-            forward_distance: positive = ahead, negative = behind
-            lateral_offset: positive = right, negative = left
-    """
-
-    # If no route or no waypoints, return zero vector
+    """Computes the goal vector to the next waypoint, returns the forward and lateral distance from the next waypoint."""
     if len(self.route) == 0 or self.current_waypoint_idx >= len(self.route):
       return np.array([0.0, 0.0], dtype=np.float32)
 
@@ -233,41 +237,99 @@ class CarlaEnv(gym.Env):
     vehicle_location = vehicle_transform.location
     vehicle_rotation = vehicle_transform.rotation
 
-    # Get current target waypoint
     target_waypoint_loc = self.route[self.current_waypoint_idx][0].transform.location
 
-    # World-frame delta
     dx = target_waypoint_loc.x - vehicle_location.x
     dy = target_waypoint_loc.y - vehicle_location.y
 
-    # Convert vehicle yaw to radians
+    # Get the forward and lateral distance from the next waypoint based on the vehicle's rotation
     yaw = np.radians(vehicle_rotation.yaw)
-
-    # Vehicle's forward vector: direction it's pointing
     forward_x = np.cos(yaw)
     forward_y = np.sin(yaw)
-
-    # Vehicle's right vector: perpendicular to forward
     right_x = np.cos(yaw + np.pi / 2)
     right_y = np.sin(yaw + np.pi / 2)
 
-    # Project world delta onto vehicle's forward and right axes
     forward_distance = dx * forward_x + dy * forward_y
     lateral_offset = dx * right_x + dy * right_y
 
     return np.array([forward_distance, lateral_offset], dtype=np.float32)
 
+  def _compute_signed_distance_to_stop(self, vehicle_location, stop_waypoint):
+    """Compute signed distance along lane direction to stop waypoint.
+
+    Returns:
+      Signed distance in meters: negative = before stop line, positive = crossed.
+    """
+    stop_transform = stop_waypoint.transform
+    stop_forward = stop_transform.get_forward_vector()
+
+    dx = vehicle_location.x - stop_transform.location.x
+    dy = vehicle_location.y - stop_transform.location.y
+
+    # Use dot product to get the signed distance to the stop waypoint
+    signed_distance = dx * stop_forward.x + dy * stop_forward.y
+
+    return signed_distance
+
+  def _detect_traffic_light(self, vehicle_location):
+    """Detect traffic light state and compute distance to stop line.
+
+    Returns:
+      (traffic_light_state, distance_to_stop): tuple of (str, float)
+    """
+    traffic_light_state = 'none'
+    distance_to_stop = 999.0
+
+    if self.vehicle is not None and self.vehicle.is_at_traffic_light():
+      traffic_light = self.vehicle.get_traffic_light()
+      tl_state = traffic_light.get_state()
+
+      if tl_state == carla.TrafficLightState.Red:
+        traffic_light_state = 'red'
+      elif tl_state == carla.TrafficLightState.Yellow:
+        traffic_light_state = 'yellow'
+      elif tl_state == carla.TrafficLightState.Green:
+        traffic_light_state = 'green'
+
+      stop_waypoints = traffic_light.get_stop_waypoints()
+      if stop_waypoints:
+        stop_waypoint = stop_waypoints[0]
+        distance_to_stop = self._compute_signed_distance_to_stop(
+            vehicle_location, stop_waypoint
+        )
+
+    return traffic_light_state, distance_to_stop
+
   def _get_observation(self):
-    """Return Dict observation with image and goal vector."""
+    """Return Dict observation with image, goal vector, traffic light state, and distance to stop."""
     image = self._rgb_image.copy() if self._rgb_image is not None else np.zeros(
         (84, 84, 3), dtype=np.uint8)
 
-    # Compute goal vector to next waypoint
     goal = self._compute_goal_vector()
+
+    vehicle_location = self.vehicle.get_transform().location if self.vehicle else None
+    traffic_light_state, distance_to_stop = self._detect_traffic_light(
+        vehicle_location)
+
+    # Encode traffic light state as one-hot: [no_light, red, yellow, green]
+    tl_one_hot_map = {
+        'none': np.array([1, 0, 0, 0], dtype=np.float32),
+        'red': np.array([0, 1, 0, 0], dtype=np.float32),
+        'yellow': np.array([0, 0, 1, 0], dtype=np.float32),
+        'green': np.array([0, 0, 0, 1], dtype=np.float32),
+    }
+    tl_one_hot = tl_one_hot_map.get(
+        traffic_light_state, tl_one_hot_map['none'])
+
+    # Clip distance to stop and normalize to [0, 1]
+    distance_clipped = np.clip(distance_to_stop, 0.0, 50.0)
+    distance_normalized = np.array([distance_clipped / 50.0], dtype=np.float32)
 
     return {
         "image": image,
-        "goal": goal
+        "goal": goal,
+        "traffic_light": tl_one_hot,
+        "distance_to_stop": distance_normalized
     }
 
   def _get_vehicle_state(self):
@@ -310,6 +372,10 @@ class CarlaEnv(gym.Env):
       lane_deviation = min(lane_deviation_2d, 5.0)
       off_road = lane_deviation_2d > (waypoint.lane_width / 2.0)
 
+    vehicle_location = self.vehicle.get_transform().location
+    traffic_light_state, distance_to_stop = self._detect_traffic_light(
+        vehicle_location)
+
     return {
         'location': (vehicle_location.x, vehicle_location.y, vehicle_location.z),
         'rotation': (vehicle_transform.rotation.pitch, vehicle_transform.rotation.yaw, vehicle_transform.rotation.roll),
@@ -320,6 +386,8 @@ class CarlaEnv(gym.Env):
         'collision': self.collision_occurred,
         'lane_deviation': lane_deviation,
         'off_road': off_road,
+        'traffic_light_state': traffic_light_state,
+        'distance_to_stop': distance_to_stop,
     }
 
   def _cleanup_actors(self):
@@ -343,7 +411,7 @@ class CarlaEnv(gym.Env):
     self.prev_action = None
 
   def reset(self, seed=None, options=None):
-    """Reset the environment for a new episode with randomized spawn/destination/weather."""
+    """Reset the environment every episode with randomized elements each time."""
     super().reset(seed=seed)
 
     self._cleanup_actors()
@@ -351,7 +419,7 @@ class CarlaEnv(gym.Env):
     # Increment episode counter
     self.episode_count += 1
 
-    # Check if we should resample the map based on frequency
+    # Check if map should be changed based on frequency
     if self.episode_count % self.map_change_frequency == 0:
       maps = self.phase_config['distribution']['maps']
       new_map = np.random.choice(maps)
@@ -361,25 +429,25 @@ class CarlaEnv(gym.Env):
         self.current_map = new_map
         self.world = self.client.load_world(self.current_map)
 
-        # Reapply synchronous settings after load_world
+        # Apply synchronous settings after loading new world
         settings = self.world.get_settings()
         settings.synchronous_mode = True
         settings.fixed_delta_seconds = 1.0 / 60.0
         self.world.apply_settings(settings)
         self._original_settings = self.world.get_settings()
 
-        # Refresh map-dependent handles
+        # Refresh map-dependent objects
         self.carla_map = self.world.get_map()
         self.spawn_points = self.carla_map.get_spawn_points()
 
-        # Recreates route planner for new map
+        # Recreate route planner for new map
         self.route_planner = GlobalRoutePlanner(
             self.carla_map, sampling_resolution=2.0)
 
-    # Randomize weather for new episode
+    # Apply random weather for new episode
     self._apply_random_weather()
 
-    # Randomize spawn and destination points
+    # Randomize spawn and destination indices
     num_spawn_points = len(self.spawn_points)
     self.spawn_idx = self.np_random.integers(0, num_spawn_points)
     self.dest_idx = self.np_random.integers(0, num_spawn_points)
@@ -393,7 +461,7 @@ class CarlaEnv(gym.Env):
     self.step_count = 0
     self.collision_occurred = False
 
-    # Calculate initial distance for reference
+    # Calculate initial distance to destination
     spawn_loc = self.spawn_points[self.spawn_idx].location
     dest_loc = self.spawn_points[self.dest_idx].location
     self.initial_distance = spawn_loc.distance(dest_loc)
@@ -459,12 +527,21 @@ class CarlaEnv(gym.Env):
     if state['distance_to_destination'] < 2.0:
       terminated = True
 
+    # Red-light violation termination
+    red_light_violation = False
+    if (state['traffic_light_state'] == 'red' and
+        state['distance_to_stop'] > 0.0 and
+            state['speed'] > 5.0):
+      terminated = True
+      red_light_violation = True
+
     # Episode timeout: max steps reached
     episode_timeout = self.step_count >= self.max_steps
 
     info = state
     info['step'] = self.step_count
     info['initial_distance'] = self.initial_distance
+    info['red_light_violation'] = red_light_violation
 
     return observation, reward, terminated, episode_timeout, info
 

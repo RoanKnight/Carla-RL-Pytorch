@@ -31,6 +31,7 @@ def test(model_path: str = None, episodes: int = 5):
         'success': 0,
         'collision': 0,
         'timeout': 0,
+        'red_light_violations': 0,
         'total_reward': [],
         'episode_length': []
     }
@@ -68,6 +69,10 @@ def test(model_path: str = None, episodes: int = 5):
         action, _ = agent.predict(obs, deterministic=True)
         obs, step_reward, terminated, truncated, info = env.step(action)
 
+        # Track red-light violations
+        if info.get('red_light_violation', False):
+          metrics['red_light_violations'] += 1
+
         episode_finished = terminated or truncated
         episode_reward += step_reward
         episode_steps += 1
@@ -96,6 +101,7 @@ def test(model_path: str = None, episodes: int = 5):
         f"Success:  {metrics['success']}/{episodes} ({100 * metrics['success'] / episodes:.1f}%)")
     logging.info(f"Collision: {metrics['collision']}/{episodes}")
     logging.info(f"Timeout:   {metrics['timeout']}/{episodes}")
+    logging.info(f"Red Light Violations: {metrics['red_light_violations']}/{episodes}")
     logging.info(
         f"Avg Reward: {sum(metrics['total_reward']) / len(metrics['total_reward']):.2f}")
     logging.info(
