@@ -65,8 +65,11 @@ class CarlaEnv(gym.Env):
     self.vehicle = None
     self.rgb_camera = None
     self.collision_sensor = None
+    self.lane_invasion_sensor = None
     self._original_settings = None
     self._rgb_image = None
+    self.lane_invasion = False
+    self.lane_invasion_count = 0
 
     self._setup_carla()
     self._setup_spaces()
@@ -176,7 +179,7 @@ class CarlaEnv(gym.Env):
       raise RuntimeError("Failed to spawn vehicle after retries")
 
   def _setup_sensors(self):
-    """Attach RGB camera and collision sensor to vehicle."""
+    """Attach RGB camera, collision sensor, and lane invasion sensor to vehicle."""
     obs_config = self.config.get('observation', {})
     width = obs_config.get('width', 640)
     height = obs_config.get('height', 480)
@@ -209,6 +212,17 @@ class CarlaEnv(gym.Env):
     self.collision_sensor.listen(
         lambda evt: CarlaEnv._on_collision(current_env_instance, evt))
 
+    # Lane Invasion Sensor
+    lane_invasion_bp = self.world.get_blueprint_library().find(
+        'sensor.other.lane_invasion')
+    self.lane_invasion_sensor = self.world.spawn_actor(
+        lane_invasion_bp,
+        carla.Transform(),
+        attach_to=self.vehicle
+    )
+    self.lane_invasion_sensor.listen(
+        lambda evt: CarlaEnv._on_lane_invasion(current_env_instance, evt))
+
   @staticmethod
   def _on_rgb_image(current_env_instance, image):
     """Callback for RGB camera sensor."""
@@ -227,6 +241,15 @@ class CarlaEnv(gym.Env):
     if self is None:
       return
     self.collision_occurred = True
+
+  @staticmethod
+  def _on_lane_invasion(current_env_instance, event):
+    """Callback for lane invasion sensor."""
+    self = current_env_instance()
+    if self is None:
+      return
+    self.lane_invasion = True
+    self.lane_invasion_count += 1
 
   def _compute_goal_vector(self):
     """Computes the goal vector to the next waypoint, returns the forward and lateral distance from the next waypoint."""
@@ -388,6 +411,8 @@ class CarlaEnv(gym.Env):
         'off_road': off_road,
         'traffic_light_state': traffic_light_state,
         'distance_to_stop': distance_to_stop,
+        'lane_invasion': self.lane_invasion,
+        'lane_invasion_count': self.lane_invasion_count,
     }
 
   def _cleanup_actors(self):
@@ -396,9 +421,11 @@ class CarlaEnv(gym.Env):
       self.rgb_camera.stop()
     if self.collision_sensor is not None:
       self.collision_sensor.stop()
+    if self.lane_invasion_sensor is not None:
+      self.lane_invasion_sensor.stop()
 
     # Destroy actors
-    for actor in [self.collision_sensor, self.rgb_camera, self.vehicle]:
+    for actor in [self.lane_invasion_sensor, self.collision_sensor, self.rgb_camera, self.vehicle]:
       if actor is not None and actor.is_alive:
         actor.destroy()
 
@@ -406,9 +433,12 @@ class CarlaEnv(gym.Env):
     self.vehicle = None
     self.rgb_camera = None
     self.collision_sensor = None
+    self.lane_invasion_sensor = None
     self._rgb_image = None
     self.prev_state = None
     self.prev_action = None
+    self.lane_invasion = False
+    self.lane_invasion_count = 0
 
   def reset(self, seed=None, options=None):
     """Reset the environment every episode with randomized elements each time."""
@@ -460,6 +490,8 @@ class CarlaEnv(gym.Env):
     # Reset episode state
     self.step_count = 0
     self.collision_occurred = False
+    self.lane_invasion = False
+    self.lane_invasion_count = 0
 
     # Calculate initial distance to destination
     spawn_loc = self.spawn_points[self.spawn_idx].location
@@ -521,6 +553,9 @@ class CarlaEnv(gym.Env):
     # Store current state/action for next step
     self.prev_state = state.copy()
     self.prev_action = action.copy()
+
+    # Reset lane invasion flag for next step
+    self.lane_invasion = False
 
     # Termination: collision or reached destination
     terminated = self.collision_occurred

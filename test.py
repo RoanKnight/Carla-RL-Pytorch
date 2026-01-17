@@ -32,8 +32,10 @@ def test(model_path: str = None, episodes: int = 5):
         'collision': 0,
         'timeout': 0,
         'red_light_violations': 0,
+        'lane_invasions': 0,
         'total_reward': [],
-        'episode_length': []
+        'episode_length': [],
+        'lane_invasion_counts': []
     }
 
     for ep in range(episodes):
@@ -45,6 +47,7 @@ def test(model_path: str = None, episodes: int = 5):
       episode_finished = False
       episode_reward = 0.0
       episode_steps = 0
+      episode_lane_invasions = 0
 
       while not episode_finished:
         # Spectator camera following vehicle with free look
@@ -65,13 +68,18 @@ def test(model_path: str = None, episodes: int = 5):
             life_time=0.1
         )
 
-        # Use policy network directly for testing, no randomness
+        # Use policy for testing, no randomness
         action, _ = agent.predict(obs, deterministic=True)
         obs, step_reward, terminated, truncated, info = env.step(action)
 
         # Track red-light violations
         if info.get('red_light_violation', False):
           metrics['red_light_violations'] += 1
+
+        # Track lane invasions
+        lane_invasion_count = info.get('lane_invasion_count', 0)
+        if lane_invasion_count > 0:
+          episode_lane_invasions += lane_invasion_count
 
         episode_finished = terminated or truncated
         episode_reward += step_reward
@@ -80,20 +88,20 @@ def test(model_path: str = None, episodes: int = 5):
       # Track metrics
       metrics['total_reward'].append(episode_reward)
       metrics['episode_length'].append(episode_steps)
+      metrics['lane_invasions'] += episode_lane_invasions
+      metrics['lane_invasion_counts'].append(episode_lane_invasions)
 
-      # Classify episode outcome based on info dict and episode state
+      # If episode ended with collision, timeout, or red light violation, track the metric
       if info.get('collision', False):
         metrics['collision'] += 1
       elif episode_steps >= carla_env.max_steps:
         metrics['timeout'] += 1
       else:
-        # Episode ended without collision or timeout => reached destination
         metrics['success'] += 1
 
       logging.info(
-          f"Episode {ep + 1}: Reward={episode_reward:8.2f}, Steps={episode_steps:4d}")
+          f"Episode {ep + 1}: Reward={episode_reward:8.2f}, Steps={episode_steps:4d}, Lane Invasions={episode_lane_invasions:2d}")
 
-    # Summary
     logging.info("=" * 50)
     logging.info("TEST SUMMARY")
     logging.info("=" * 50)
@@ -101,11 +109,16 @@ def test(model_path: str = None, episodes: int = 5):
         f"Success:  {metrics['success']}/{episodes} ({100 * metrics['success'] / episodes:.1f}%)")
     logging.info(f"Collision: {metrics['collision']}/{episodes}")
     logging.info(f"Timeout:   {metrics['timeout']}/{episodes}")
-    logging.info(f"Red Light Violations: {metrics['red_light_violations']}/{episodes}")
+    logging.info(
+        f"Red Light Violations: {metrics['red_light_violations']}/{episodes}")
+    logging.info(
+        f"Total Lane Invasions: {metrics['lane_invasions']}/{episodes}")
     logging.info(
         f"Avg Reward: {sum(metrics['total_reward']) / len(metrics['total_reward']):.2f}")
     logging.info(
         f"Avg Steps:  {sum(metrics['episode_length']) / len(metrics['episode_length']):.1f}")
+    logging.info(
+        f"Avg Lane Invasions/Episode: {sum(metrics['lane_invasion_counts']) / len(metrics['lane_invasion_counts']):.2f}")
   except KeyboardInterrupt:
     logging.info(
         "Testing interrupted by user (KeyboardInterrupt). Cleaning up...")

@@ -36,7 +36,7 @@ def train():
         reset_num_timesteps=False,
     )
   except KeyboardInterrupt:
-    # Make Ctrl+C a clean, expected shutdown (still runs env.close() in finally)
+    # Enable ability to interrupt training with keyboard shortcut
     logging.info("Training interrupted by user (KeyboardInterrupt). Cleaning up...")
   finally:
     env.close()

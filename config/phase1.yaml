@@ -51,12 +51,13 @@ reward_weights:
   speed_penalty: 0.05  
   lane_deviation: 0.2   
   off_road: 3.0 
-  collision: 100.0
+  lane_invasion: 50.0
+  collision: 200.0
   steering_smoothness: 0.2
   throttle_brake_smoothness: 0.1
-  success: 100.0
+  success: 200.0
   traffic_light_compliance: 0.5
-  red_light_violation: 300.0
+  red_light_violation: 200.0
   holding_at_red: 0.5
 
 # Speed targets for driving

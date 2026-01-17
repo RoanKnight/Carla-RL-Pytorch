@@ -65,6 +65,9 @@ def compute_reward(state: dict, action: np.ndarray, prev_state: dict,
   if state.get('off_road', False):
     reward -= weights['off_road']
 
+  if state.get('lane_invasion', False):
+    reward -= weights['lane_invasion']
+
   if prev_state is not None and prev_action is not None:
     steering_change = abs(action[0] - prev_action[0])
     reward -= weights['steering_smoothness'] * steering_change
