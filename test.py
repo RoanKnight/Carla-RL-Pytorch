@@ -48,6 +48,7 @@ def test(model_path: str = None, episodes: int = 5):
       episode_reward = 0.0
       episode_steps = 0
       episode_lane_invasions = 0
+      prev_lane_invasion_count = 0
 
       while not episode_finished:
         # Spectator camera following vehicle with free look
@@ -77,9 +78,10 @@ def test(model_path: str = None, episodes: int = 5):
           metrics['red_light_violations'] += 1
 
         # Track lane invasions
-        lane_invasion_count = info.get('lane_invasion_count', 0)
-        if lane_invasion_count > 0:
-          episode_lane_invasions += lane_invasion_count
+        lane_invasion_count = int(info.get('lane_invasion_count', 0))
+        new_lane_invasions = max(0, lane_invasion_count - prev_lane_invasion_count)
+        episode_lane_invasions += new_lane_invasions
+        prev_lane_invasion_count = lane_invasion_count
 
         episode_finished = terminated or truncated
         episode_reward += step_reward

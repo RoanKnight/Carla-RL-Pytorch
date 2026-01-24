@@ -18,7 +18,8 @@ def train():
 
     if checkpoint_path:
       agent = load_agent(checkpoint_path, env=env)
-      remaining_steps = config['training']['total_timesteps'] - checkpoint_steps
+      remaining_steps = config['training']['total_timesteps'] - \
+          checkpoint_steps
       logging.info(f"Found checkpoint at {checkpoint_steps} steps")
       logging.info(f"Resuming from {checkpoint_steps} steps")
     else:
@@ -37,7 +38,8 @@ def train():
     )
   except KeyboardInterrupt:
     # Enable ability to interrupt training with keyboard shortcut
-    logging.info("Training interrupted by user (KeyboardInterrupt). Cleaning up...")
+    logging.info(
+        "Training interrupted by user (KeyboardInterrupt). Cleaning up...")
   finally:
     env.close()
 

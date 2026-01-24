@@ -19,7 +19,7 @@ map_randomization:
 # SAC hyperparameters
 sac:
   learning_rate: 0.0003
-  buffer_size: 100000
+  buffer_size: 60000
   batch_size: 256 
   gamma: 0.99
   tau: 0.005
@@ -55,6 +55,7 @@ reward_weights:
   collision: 200.0
   steering_smoothness: 0.2
   throttle_brake_smoothness: 0.1
+  reverse_usage: 0.3
   success: 200.0
   traffic_light_compliance: 0.5
   red_light_violation: 200.0

@@ -13,6 +13,17 @@ observation:
   width: 84
   height: 84
   fov: 90
+  rear_fov: 110
+
+lane_detection:
+  max_lane_deviation: 5.0
+
+control:
+  max_forward_speed: 60.0
+  max_reverse_speed: 10.0
+  speed_tolerance: 1.0
+  min_speed_for_gear_change: 2.0
+  proportional_gain: 0.1
 
 # Spectator camera configuration for test visualization
 camera:

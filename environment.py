@@ -64,12 +64,17 @@ class CarlaEnv(gym.Env):
     self.carla_map = None
     self.vehicle = None
     self.rgb_camera = None
+    self.rgb_camera_rear = None
     self.collision_sensor = None
     self.lane_invasion_sensor = None
     self._original_settings = None
     self._rgb_image = None
+    self._rgb_image_rear = None
     self.lane_invasion = False
     self.lane_invasion_count = 0
+    self.drive_mode = 'forward'
+    self.obs_width = None
+    self.obs_height = None
 
     self._setup_carla()
     self._setup_spaces()
@@ -126,13 +131,27 @@ class CarlaEnv(gym.Env):
     obs_config = self.config.get('observation', {})
     width = obs_config.get('width', 640)
     height = obs_config.get('height', 480)
+    self.obs_width = width
+    self.obs_height = height
 
     self.observation_space = spaces.Dict({
-        "image": spaces.Box(
+        "image_front": spaces.Box(
             low=0,
             high=255,
             shape=(height, width, 3),
             dtype=np.uint8
+        ),
+        "image_rear": spaces.Box(
+            low=0,
+            high=255,
+            shape=(height, width, 3),
+            dtype=np.uint8
+        ),
+        "speed_limit": spaces.Box(
+            low=0.0,
+            high=1.0,
+            shape=(1,),
+            dtype=np.float32
         ),
         "goal": spaces.Box(
             low=-np.inf,
@@ -178,31 +197,52 @@ class CarlaEnv(gym.Env):
     if self.vehicle is None:
       raise RuntimeError("Failed to spawn vehicle after retries")
 
-  def _setup_sensors(self):
-    """Attach RGB camera, collision sensor, and lane invasion sensor to vehicle."""
-    obs_config = self.config.get('observation', {})
-    width = obs_config.get('width', 640)
-    height = obs_config.get('height', 480)
-    fov = obs_config.get('fov', 90)
+  def _spawn_camera(self, x, z, yaw, fov, width, height, buffer_attr):
+    """Helper function to spawn a camera actor, used for front and rear cameras.
 
-    # RGB Camera
+    Returns:
+      Spawned camera actor
+    """
     camera_bp = self.world.get_blueprint_library().find('sensor.camera.rgb')
     camera_bp.set_attribute('image_size_x', str(width))
     camera_bp.set_attribute('image_size_y', str(height))
     camera_bp.set_attribute('fov', str(fov))
 
-    camera_transform = carla.Transform(carla.Location(x=1.5, z=2.4))
-    self.rgb_camera = self.world.spawn_actor(
-        camera_bp,
-        camera_transform,
-        attach_to=self.vehicle
+    transform = carla.Transform(
+        carla.Location(x=x, z=z),
+        carla.Rotation(yaw=yaw)
+    )
+    camera = self.world.spawn_actor(
+        camera_bp, transform, attach_to=self.vehicle)
+
+    current_env_instance = weakref.ref(self)
+    camera.listen(
+        lambda img: CarlaEnv._on_camera_image(current_env_instance, img, buffer_attr))
+
+    return camera
+
+  def _setup_sensors(self):
+    """Attach front/rear RGB cameras, collision sensor, and lane invasion sensor to vehicle."""
+    obs_config = self.config.get('observation', {})
+    width = obs_config.get('width', 640)
+    height = obs_config.get('height', 480)
+    fov = obs_config.get('fov', 90)
+    rear_fov = obs_config.get('rear_fov', 110)
+
+    self.rgb_camera = self._spawn_camera(
+        x=1.5, z=2.4, yaw=0.0, fov=fov,
+        width=width, height=height,
+        buffer_attr='_rgb_image'
+    )
+
+    self.rgb_camera_rear = self._spawn_camera(
+        x=-2.0, z=2.4, yaw=180.0, fov=rear_fov,
+        width=width, height=height,
+        buffer_attr='_rgb_image_rear'
     )
 
     current_env_instance = weakref.ref(self)
-    self.rgb_camera.listen(
-        lambda img: CarlaEnv._on_rgb_image(current_env_instance, img))
 
-    # Collision Sensor
     collision_bp = self.world.get_blueprint_library().find('sensor.other.collision')
     self.collision_sensor = self.world.spawn_actor(
         collision_bp,
@@ -212,7 +252,6 @@ class CarlaEnv(gym.Env):
     self.collision_sensor.listen(
         lambda evt: CarlaEnv._on_collision(current_env_instance, evt))
 
-    # Lane Invasion Sensor
     lane_invasion_bp = self.world.get_blueprint_library().find(
         'sensor.other.lane_invasion')
     self.lane_invasion_sensor = self.world.spawn_actor(
@@ -224,15 +263,15 @@ class CarlaEnv(gym.Env):
         lambda evt: CarlaEnv._on_lane_invasion(current_env_instance, evt))
 
   @staticmethod
-  def _on_rgb_image(current_env_instance, image):
-    """Callback for RGB camera sensor."""
+  def _on_camera_image(current_env_instance, image, buffer_attr):
+    """Unified callback for all RGB camera sensors."""
     self = current_env_instance()
     if self is None:
       return
     array = np.frombuffer(image.raw_data, dtype=np.uint8)
     array = array.reshape((image.height, image.width, 4))
-    # Convert BGRA to RGB
-    self._rgb_image = array[:, :, :3][:, :, ::-1]
+    rgb_image = array[:, :, :3][:, :, ::-1]
+    setattr(self, buffer_attr, rgb_image)
 
   @staticmethod
   def _on_collision(current_env_instance, event):
@@ -294,6 +333,18 @@ class CarlaEnv(gym.Env):
 
     return signed_distance
 
+  def _get_signed_speed(self):
+    """Get vehicle speed with sign (positive=forward, negative=reverse) in km/h."""
+    velocity = self.vehicle.get_velocity()
+    speed_magnitude = ((velocity.x**2 + velocity.y**2 + velocity.z**2) ** 0.5) * 3.6
+
+    vehicle_transform = self.vehicle.get_transform()
+    forward = vehicle_transform.get_forward_vector()
+    velocity_dot = velocity.x * forward.x + \
+        velocity.y * forward.y + velocity.z * forward.z
+
+    return float(-speed_magnitude if velocity_dot < 0 else speed_magnitude)
+
   def _detect_traffic_light(self, vehicle_location):
     """Detect traffic light state and compute distance to stop line.
 
@@ -324,17 +375,30 @@ class CarlaEnv(gym.Env):
     return traffic_light_state, distance_to_stop
 
   def _get_observation(self):
-    """Return Dict observation with image, goal vector, traffic light state, and distance to stop."""
-    image = self._rgb_image.copy() if self._rgb_image is not None else np.zeros(
-        (84, 84, 3), dtype=np.uint8)
+    """Return Dict observation with front/rear images, goal vector, traffic light state, and distance to stop."""
+    height = self.obs_height if self.obs_height is not None else 84
+    width = self.obs_width if self.obs_width is not None else 84
+    image_front = self._rgb_image.copy() if self._rgb_image is not None else np.zeros(
+        (height, width, 3), dtype=np.uint8)
+
+    image_rear = self._rgb_image_rear.copy() if self._rgb_image_rear is not None else np.zeros(
+        (height, width, 3), dtype=np.uint8)
 
     goal = self._compute_goal_vector()
+
+    speed_limit_kmh = float(self.vehicle.get_speed_limit()
+                            ) if self.vehicle is not None else 0.0
+    max_speed_limit_kmh = 120.0
+    speed_limit_norm = np.array(
+        [np.clip(speed_limit_kmh, 0.0, max_speed_limit_kmh) /
+         max_speed_limit_kmh],
+        dtype=np.float32
+    )
 
     vehicle_location = self.vehicle.get_transform().location if self.vehicle else None
     traffic_light_state, distance_to_stop = self._detect_traffic_light(
         vehicle_location)
 
-    # Encode traffic light state as one-hot: [no_light, red, yellow, green]
     tl_one_hot_map = {
         'none': np.array([1, 0, 0, 0], dtype=np.float32),
         'red': np.array([0, 1, 0, 0], dtype=np.float32),
@@ -344,12 +408,13 @@ class CarlaEnv(gym.Env):
     tl_one_hot = tl_one_hot_map.get(
         traffic_light_state, tl_one_hot_map['none'])
 
-    # Clip distance to stop and normalize to [0, 1]
     distance_clipped = np.clip(distance_to_stop, 0.0, 50.0)
     distance_normalized = np.array([distance_clipped / 50.0], dtype=np.float32)
 
     return {
-        "image": image,
+        "image_front": image_front,
+        "image_rear": image_rear,
+        "speed_limit": speed_limit_norm,
         "goal": goal,
         "traffic_light": tl_one_hot,
         "distance_to_stop": distance_normalized
@@ -360,7 +425,7 @@ class CarlaEnv(gym.Env):
     vehicle_transform = self.vehicle.get_transform()
     vehicle_location = vehicle_transform.location
     velocity = self.vehicle.get_velocity()
-    speed = np.sqrt(velocity.x**2 + velocity.y**2) * 3.6
+    speed = self._get_signed_speed()
 
     destination = self.spawn_points[self.dest_idx].location
     distance_to_dest = np.sqrt(
@@ -383,8 +448,11 @@ class CarlaEnv(gym.Env):
         lane_type=carla.LaneType.Driving
     )
 
+    max_lane_deviation = self.config.get(
+        'lane_detection', {}).get('max_lane_deviation', 5.0)
+
     if waypoint is None:
-      lane_deviation = 5.0
+      lane_deviation = max_lane_deviation
       off_road = True
     else:
       wp_location = waypoint.transform.location
@@ -392,17 +460,21 @@ class CarlaEnv(gym.Env):
           (vehicle_location.x - wp_location.x)**2 +
           (vehicle_location.y - wp_location.y)**2
       )
-      lane_deviation = min(lane_deviation_2d, 5.0)
+      lane_deviation = min(lane_deviation_2d, max_lane_deviation)
       off_road = lane_deviation_2d > (waypoint.lane_width / 2.0)
 
     vehicle_location = self.vehicle.get_transform().location
     traffic_light_state, distance_to_stop = self._detect_traffic_light(
         vehicle_location)
 
+    speed_limit_kmh = float(self.vehicle.get_speed_limit()
+                            ) if self.vehicle is not None else 0.0
+
     return {
         'location': (vehicle_location.x, vehicle_location.y, vehicle_location.z),
         'rotation': (vehicle_transform.rotation.pitch, vehicle_transform.rotation.yaw, vehicle_transform.rotation.roll),
         'speed': speed,
+        'speed_limit_kmh': speed_limit_kmh,
         'distance_to_destination': distance_to_dest,
         'waypoint_distance': waypoint_distance,
         'current_waypoint_idx': self.current_waypoint_idx,
@@ -419,22 +491,24 @@ class CarlaEnv(gym.Env):
     """Destroy all spawned actors in safe order to prevent memory leaks and stop callbacks: stop sensors, tick, destroy."""
     if self.rgb_camera is not None:
       self.rgb_camera.stop()
+    if self.rgb_camera_rear is not None:
+      self.rgb_camera_rear.stop()
     if self.collision_sensor is not None:
       self.collision_sensor.stop()
     if self.lane_invasion_sensor is not None:
       self.lane_invasion_sensor.stop()
 
-    # Destroy actors
-    for actor in [self.lane_invasion_sensor, self.collision_sensor, self.rgb_camera, self.vehicle]:
+    for actor in [self.lane_invasion_sensor, self.collision_sensor, self.rgb_camera_rear, self.rgb_camera, self.vehicle]:
       if actor is not None and actor.is_alive:
         actor.destroy()
 
-    # Reset references
     self.vehicle = None
     self.rgb_camera = None
+    self.rgb_camera_rear = None
     self.collision_sensor = None
     self.lane_invasion_sensor = None
     self._rgb_image = None
+    self._rgb_image_rear = None
     self.prev_state = None
     self.prev_action = None
     self.lane_invasion = False
@@ -492,6 +566,7 @@ class CarlaEnv(gym.Env):
     self.collision_occurred = False
     self.lane_invasion = False
     self.lane_invasion_count = 0
+    self.drive_mode = 'forward'
 
     # Calculate initial distance to destination
     spawn_loc = self.spawn_points[self.spawn_idx].location
@@ -515,14 +590,71 @@ class CarlaEnv(gym.Env):
 
   def step(self, action):
     """Execute one environment step."""
-    # Convert 2D action to CARLA controls, steering [-1,1], throttle_brake [-1,1]
-    throttle = max(0.0, float(action[1]))
-    brake = max(0.0, -float(action[1]))
+    steer_command = float(action[0])
+    target_speed_normalized = float(action[1])
+
+    ctrl_config = self.config.get('control', {})
+    max_forward = float(ctrl_config.get('max_forward_speed', 60.0))
+    max_reverse = ctrl_config.get('max_reverse_speed', 10.0)
+    speed_tolerance = ctrl_config.get('speed_tolerance', 1.0)
+    gain = ctrl_config.get('proportional_gain', 0.1)
+
+    if target_speed_normalized >= 0:
+      target_speed_kmh = target_speed_normalized * max_forward
+    else:
+      target_speed_kmh = target_speed_normalized * max_reverse
+
+    current_speed_kmh = self._get_signed_speed()
+
+    if target_speed_kmh < -speed_tolerance:
+      requested_mode = 'reverse'
+    elif target_speed_kmh > speed_tolerance:
+      requested_mode = 'forward'
+    else:
+      requested_mode = self.drive_mode if self.drive_mode in (
+          'forward', 'reverse') else 'forward'
+
+    if self.drive_mode in ('forward', 'reverse') and requested_mode != self.drive_mode:
+      self.drive_mode = 'stopping_to_reverse' if requested_mode == 'reverse' else 'stopping_to_forward'
+
+    if self.drive_mode == 'stopping_to_reverse' and requested_mode == 'forward':
+      self.drive_mode = 'stopping_to_forward'
+    elif self.drive_mode == 'stopping_to_forward' and requested_mode == 'reverse':
+      self.drive_mode = 'stopping_to_reverse'
+
+    if self.drive_mode in ('stopping_to_reverse', 'stopping_to_forward'):
+      if abs(current_speed_kmh) > speed_tolerance:
+        throttle = 0.0
+        brake = min(max(abs(current_speed_kmh) * gain, 0.0), 1.0)
+        reverse_flag = current_speed_kmh < 0.0
+      else:
+        self.drive_mode = 'reverse' if self.drive_mode == 'stopping_to_reverse' else 'forward'
+        throttle = 0.0
+        brake = 0.0
+        reverse_flag = self.drive_mode == 'reverse'
+    else:
+      reverse_flag = self.drive_mode == 'reverse'
+
+      mode_sign = -1.0 if reverse_flag else 1.0
+      target_speed_mode = mode_sign * target_speed_kmh
+      current_speed_mode = mode_sign * current_speed_kmh
+      speed_error_mode = target_speed_mode - current_speed_mode
+
+      if speed_error_mode > speed_tolerance:
+        throttle = min(max(speed_error_mode * gain, 0.0), 1.0)
+        brake = 0.0
+      elif speed_error_mode < -speed_tolerance:
+        throttle = 0.0
+        brake = min(max(abs(speed_error_mode) * gain, 0.0), 1.0)
+      else:
+        throttle = 0.0
+        brake = 0.0
 
     control = carla.VehicleControl(
-        steer=float(action[0]),
+        steer=steer_command,
         throttle=throttle,
-        brake=brake
+        brake=brake,
+        reverse=reverse_flag
     )
     self.vehicle.apply_control(control)
     self.world.tick()

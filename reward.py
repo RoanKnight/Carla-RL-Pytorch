@@ -59,6 +59,9 @@ def compute_reward(state: dict, action: np.ndarray, prev_state: dict,
   else:
     reward -= weights['speed_penalty'] * (speed - speed_max)
 
+  if speed < -1.0:
+    reward -= weights.get('reverse_usage', 0.3)
+
   lane_deviation = state.get('lane_deviation', 0.0)
   reward -= weights['lane_deviation'] * lane_deviation
 
