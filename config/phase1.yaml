@@ -9,7 +9,13 @@ training:
 
 # Episode configuration
 episode:
-  max_steps: 5000
+  schedule:
+    - timesteps: 0
+      max_steps: 1500
+    - timesteps: 1000000
+      max_steps: 2500
+    - timesteps: 2000000
+      max_steps: 5000
 
 # Map randomization frequency in episodes
 map_randomization:
@@ -48,15 +54,16 @@ reward_weights:
   waypoint_progress: 1.0 
   waypoint_reached: 10.0 
   speed_bonus: 0.2       
-  speed_penalty: 0.05  
+  speed_penalty: 0.02  
   lane_deviation: 0.2   
   off_road: 3.0 
   lane_invasion: 50.0
   collision: 200.0
   steering_smoothness: 0.2
   throttle_brake_smoothness: 0.1
-  reverse_usage: 0.3
-  success: 200.0
+  reverse_usage: 1.5
+  direction_change: 5.0
+  success: 300.0
   traffic_light_compliance: 0.5
   red_light_violation: 200.0
   holding_at_red: 0.5

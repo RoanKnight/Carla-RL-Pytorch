@@ -37,8 +37,12 @@ class CarlaEnv(gym.Env):
 
     # Episode state
     self.step_count = 0
-    self.max_steps = self.phase_config.get(
-        'episode', {}).get('max_steps', 1000)
+    # Get initial max_steps from first schedule entry
+    schedule = self.phase_config.get('episode', {}).get('schedule', [])
+    if schedule:
+      self.max_steps = schedule[0]['max_steps']
+    else:
+      self.max_steps = 1000
     self.collision_occurred = False
     self.episode_count = 0
 
@@ -73,6 +77,7 @@ class CarlaEnv(gym.Env):
     self.lane_invasion = False
     self.lane_invasion_count = 0
     self.drive_mode = 'forward'
+    self.prev_drive_mode = 'forward'
     self.obs_width = None
     self.obs_height = None
 
@@ -336,7 +341,8 @@ class CarlaEnv(gym.Env):
   def _get_signed_speed(self):
     """Get vehicle speed with sign (positive=forward, negative=reverse) in km/h."""
     velocity = self.vehicle.get_velocity()
-    speed_magnitude = ((velocity.x**2 + velocity.y**2 + velocity.z**2) ** 0.5) * 3.6
+    speed_magnitude = ((velocity.x**2 + velocity.y **
+                       2 + velocity.z**2) ** 0.5) * 3.6
 
     vehicle_transform = self.vehicle.get_transform()
     forward = vehicle_transform.get_forward_vector()
@@ -485,6 +491,7 @@ class CarlaEnv(gym.Env):
         'distance_to_stop': distance_to_stop,
         'lane_invasion': self.lane_invasion,
         'lane_invasion_count': self.lane_invasion_count,
+        'direction_changed': getattr(self, '_direction_changed_flag', False),
     }
 
   def _cleanup_actors(self):
@@ -567,6 +574,7 @@ class CarlaEnv(gym.Env):
     self.lane_invasion = False
     self.lane_invasion_count = 0
     self.drive_mode = 'forward'
+    self.prev_drive_mode = 'forward'
 
     # Calculate initial distance to destination
     spawn_loc = self.spawn_points[self.spawn_idx].location
@@ -606,13 +614,32 @@ class CarlaEnv(gym.Env):
 
     current_speed_kmh = self._get_signed_speed()
 
-    if target_speed_kmh < -speed_tolerance:
-      requested_mode = 'reverse'
-    elif target_speed_kmh > speed_tolerance:
-      requested_mode = 'forward'
-    else:
-      requested_mode = self.drive_mode if self.drive_mode in (
-          'forward', 'reverse') else 'forward'
+    # Value thresholds for mode switching
+    REVERSE_ENTRY_THRESHOLD = -3.0
+    FORWARD_ENTRY_THRESHOLD = 3.0
+    STAY_THRESHOLD = 1.0
+
+    if self.drive_mode == 'forward':
+      if target_speed_kmh < REVERSE_ENTRY_THRESHOLD:
+        requested_mode = 'reverse'
+      elif target_speed_kmh > STAY_THRESHOLD:
+        requested_mode = 'forward'
+      else:
+        requested_mode = 'forward'
+    elif self.drive_mode == 'reverse':
+      if target_speed_kmh > FORWARD_ENTRY_THRESHOLD:
+        requested_mode = 'forward'
+      elif target_speed_kmh < -STAY_THRESHOLD:
+        requested_mode = 'reverse'
+      else:
+        requested_mode = 'reverse'
+    else:  # in stopping modes
+      if target_speed_kmh < -STAY_THRESHOLD:
+        requested_mode = 'reverse'
+      elif target_speed_kmh > STAY_THRESHOLD:
+        requested_mode = 'forward'
+      else:
+        requested_mode = self.drive_mode if 'reverse' in self.drive_mode else 'forward'
 
     if self.drive_mode in ('forward', 'reverse') and requested_mode != self.drive_mode:
       self.drive_mode = 'stopping_to_reverse' if requested_mode == 'reverse' else 'stopping_to_forward'
@@ -659,6 +686,16 @@ class CarlaEnv(gym.Env):
     self.vehicle.apply_control(control)
     self.world.tick()
     self.step_count += 1
+
+    # Detect direction change for reward penalty
+    direction_changed = False
+    if (self.prev_drive_mode in ('forward', 'reverse') and
+        self.drive_mode in ('forward', 'reverse') and
+            self.prev_drive_mode != self.drive_mode):
+      direction_changed = True
+
+    self._direction_changed_flag = direction_changed
+    self.prev_drive_mode = self.drive_mode
 
     observation = self._get_observation()
     state = self._get_vehicle_state()

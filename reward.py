@@ -62,6 +62,10 @@ def compute_reward(state: dict, action: np.ndarray, prev_state: dict,
   if speed < -1.0:
     reward -= weights.get('reverse_usage', 0.3)
 
+  # Penalize direction changes
+  if state.get('direction_changed', False):
+    reward -= weights.get('direction_change', 5.0)
+
   lane_deviation = state.get('lane_deviation', 0.0)
   reward -= weights['lane_deviation'] * lane_deviation
 

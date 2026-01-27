@@ -51,7 +51,7 @@ def create_agent(env, config: dict) -> SAC:
   return agent
 
 def get_callbacks(config: dict) -> list:
-  """Create callbacks for training: checkpointing and logging."""
+  """Create callbacks for training: checkpointing, logging, and curriculum."""
   Path(config['logging']['checkpoint_dir']).mkdir(parents=True, exist_ok=True)
 
   checkpoint_cb = CheckpointCallback(
@@ -61,7 +61,16 @@ def get_callbacks(config: dict) -> list:
   )
 
   log_cb = EpisodeLogger(log_interval=config['training']['log_interval'])
-  return [checkpoint_cb, log_cb]
+
+  callbacks = [checkpoint_cb, log_cb]
+
+  # Always add curriculum (handles both static and dynamic schedules)
+  schedule = config.get('episode', {}).get('schedule', [])
+  if schedule:
+    curriculum_cb = EpisodeLengthCurriculum(schedule=schedule, verbose=1)
+    callbacks.append(curriculum_cb)
+
+  return callbacks
 
 def load_agent(model_path: str, env: CarlaEnv = None) -> SAC:
   """Load trained SAC agent from checkpoint."""
@@ -94,5 +103,38 @@ class EpisodeLogger(BaseCallback):
         )
       self.current_episode_reward = 0.0
       self.current_episode_steps = 0
+
+    return True
+
+
+class EpisodeLengthCurriculum(BaseCallback):
+  """Adjust episode length based on training progress."""
+  def __init__(self, schedule: list, verbose: int = 1):
+    super().__init__(verbose)
+    self.schedule = sorted(schedule, key=lambda x: x['timesteps'])
+    self.current_max_steps = self.schedule[0]['max_steps']
+
+  def _on_step(self) -> bool:
+    """Check whether the episode length should be updated based on current timesteps."""
+    current_timesteps = self.num_timesteps
+
+    # Find the appropriate max_steps for current progress
+    target_max_steps = self.schedule[0]['max_steps']
+    for entry in self.schedule:
+      if current_timesteps >= entry['timesteps']:
+        target_max_steps = entry['max_steps']
+      else:
+        break
+
+    # Update if changed
+    if target_max_steps != self.current_max_steps:
+      self.current_max_steps = target_max_steps
+
+      base_env = self.training_env.venv.envs[0].env
+      base_env.max_steps = target_max_steps
+
+      if self.verbose >= 1:
+        print(
+            f"\n[Curriculum] Timestep {current_timesteps}: max_steps → {target_max_steps}\n", flush=True)
 
     return True
