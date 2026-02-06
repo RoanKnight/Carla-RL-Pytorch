@@ -7,7 +7,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecTransposeImage
 from environment import CarlaEnv
 from reward import compute_reward
 
-def create_env(phase_config_path: str = 'config/phase1.yaml', vectorize: bool = True, mode: str = 'train'):
+def create_env(phase_config_path: str = 'config/training.yaml', vectorize: bool = True, mode: str = 'train'):
   """Create CARLA environment with reward function and phase config."""
   def _make_env():
     base = CarlaEnv(
@@ -64,10 +64,10 @@ def get_callbacks(config: dict) -> list:
 
   callbacks = [checkpoint_cb, log_cb]
 
-  # Always add curriculum (handles both static and dynamic schedules)
-  schedule = config.get('episode', {}).get('schedule', [])
-  if schedule:
-    curriculum_cb = EpisodeLengthCurriculum(schedule=schedule, verbose=1)
+  # Add curriculum manager for all dimensions
+  curriculum_config = config.get('curriculum', {})
+  if curriculum_config:
+    curriculum_cb = CurriculumManager(curriculum_config, verbose=1)
     callbacks.append(curriculum_cb)
 
   return callbacks
@@ -106,35 +106,68 @@ class EpisodeLogger(BaseCallback):
 
     return True
 
-
-class EpisodeLengthCurriculum(BaseCallback):
-  """Adjust episode length based on training progress."""
-  def __init__(self, schedule: list, verbose: int = 1):
+class CurriculumManager(BaseCallback):
+  """Manage multiple curriculum dimensions based on training progress."""
+  def __init__(self, curriculum_config: dict, verbose: int = 1):
     super().__init__(verbose)
-    self.schedule = sorted(schedule, key=lambda x: x['timesteps'])
-    self.current_max_steps = self.schedule[0]['max_steps']
+    self.curriculum = {}
+    self.current_values = {}
 
-  def _on_step(self) -> bool:
-    """Check whether the episode length should be updated based on current timesteps."""
-    current_timesteps = self.num_timesteps
+    # Parse each dimension's schedule
+    for dimension, schedule in curriculum_config.items():
+      if isinstance(schedule, list) and len(schedule) > 0:
+        self.curriculum[dimension] = sorted(
+            schedule, key=lambda x: x['timesteps'])
+        # Initialize with first value
+        self.current_values[dimension] = self._get_initial_value(
+            dimension, schedule[0])
 
-    # Find the appropriate max_steps for current progress
-    target_max_steps = self.schedule[0]['max_steps']
-    for entry in self.schedule:
-      if current_timesteps >= entry['timesteps']:
-        target_max_steps = entry['max_steps']
+  def _get_initial_value(self, dimension: str, entry: dict):
+    """Extract the value from a schedule entry based on dimension type."""
+    if dimension == 'episode_length':
+      return entry.get('max_steps')
+    elif dimension == 'maps':
+      return entry.get('choices', [])
+    elif dimension == 'weathers':
+      return entry.get('choices', [])
+    elif dimension == 'traffic':
+      return entry.get('density', 'none')
+    return None
+
+  def _get_value_for_timestep(self, schedule: list, timesteps: int, dimension: str):
+    """Find appropriate value for current timestep."""
+    value = self._get_initial_value(dimension, schedule[0])
+    for entry in schedule:
+      if timesteps >= entry['timesteps']:
+        value = self._get_initial_value(dimension, entry)
       else:
         break
+    return value
 
-    # Update if changed
-    if target_max_steps != self.current_max_steps:
-      self.current_max_steps = target_max_steps
+  def _apply_change(self, base_env, dimension: str, value):
+    """Apply a curriculum change to the environment."""
+    if dimension == 'episode_length':
+      base_env.max_steps = value
+    elif dimension == 'maps':
+      base_env.update_map_choices(value)
+    elif dimension == 'weathers':
+      base_env.update_weather_choices(value)
+    elif dimension == 'traffic':
+      base_env.update_traffic_density(value)
 
-      base_env = self.training_env.venv.envs[0].env
-      base_env.max_steps = target_max_steps
+  def _on_step(self) -> bool:
+    timesteps = self.num_timesteps
+    base_env = self.training_env.venv.envs[0].env
 
-      if self.verbose >= 1:
-        print(
-            f"\n[Curriculum] Timestep {current_timesteps}: max_steps → {target_max_steps}\n", flush=True)
+    for dimension, schedule in self.curriculum.items():
+      new_value = self._get_value_for_timestep(schedule, timesteps, dimension)
+
+      if new_value != self.current_values[dimension]:
+        self._apply_change(base_env, dimension, new_value)
+        self.current_values[dimension] = new_value
+
+        if self.verbose >= 1:
+          print(
+              f"\n[Curriculum] Timestep {timesteps}: {dimension} → {new_value}\n", flush=True)
 
     return True

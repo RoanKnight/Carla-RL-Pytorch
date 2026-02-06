@@ -13,7 +13,7 @@ class CarlaEnv(gym.Env):
   """Gymnasium wrapper for CARLA simulator."""
   metadata = {'render_modes': ['human', 'rgb_array']}
 
-  def __init__(self, config_path='config/base.yaml', phase_config_path='config/phase1.yaml', reward_fn=None, mode=None):
+  def __init__(self, config_path='config/base.yaml', phase_config_path='config/training.yaml', reward_fn=None, mode=None):
     super().__init__()
     self.config = load_config(config_path)
     self.phase_config = load_config(phase_config_path)
@@ -37,14 +37,20 @@ class CarlaEnv(gym.Env):
 
     # Episode state
     self.step_count = 0
-    # Get initial max_steps from first schedule entry
-    schedule = self.phase_config.get('episode', {}).get('schedule', [])
+    # Get initial max_steps from first curriculum entry
+    curriculum = self.phase_config.get('curriculum', {})
+    schedule = curriculum.get('episode_length', [])
     if schedule:
       self.max_steps = schedule[0]['max_steps']
     else:
       self.max_steps = 1000
     self.collision_occurred = False
     self.episode_count = 0
+
+    # Curriculum state (updated by CurriculumManager callback)
+    self.available_maps = []
+    self.available_weathers = []
+    self.traffic_density = 'none'
 
     # Spawn/destination tracking, randomised per episode
     self.spawn_idx = None
@@ -92,8 +98,10 @@ class CarlaEnv(gym.Env):
     )
     self.client.set_timeout(self.config['carla']['timeout'])
 
-    # Load random map from phase distribution
-    maps = self.phase_config['distribution']['maps']
+    # Load random map from curriculum initial choices
+    curriculum = self.phase_config.get('curriculum', {})
+    maps = curriculum.get('maps', [{}])[0].get('choices', [])
+    self.available_maps = maps
     self.current_map = np.random.choice(maps)
     self.world = self.client.load_world(self.current_map)
     self._original_settings = self.world.get_settings()
@@ -114,14 +122,16 @@ class CarlaEnv(gym.Env):
         self.carla_map, sampling_resolution=2.0)
 
   def _apply_random_weather(self):
-    """Apply a random weather preset from phase distribution."""
-    weather_list = self.phase_config['distribution'].get('weathers', [
-                                                         'clear_noon'])
-    if weather_list:
-      preset_name = np.random.choice(weather_list)
-      self.current_weather = preset_name
-      weather_params = self.weather_presets[preset_name]
-      self.world.set_weather(carla.WeatherParameters(**weather_params))
+    """Apply a random weather preset from curriculum choices."""
+    curriculum = self.phase_config.get('curriculum', {})
+    weather_list = curriculum.get('weathers', [{}])[
+        0].get('choices', ['clear_noon'])
+    if not weather_list:
+      weather_list = ['clear_noon']
+    preset_name = np.random.choice(weather_list)
+    self.current_weather = preset_name
+    weather_params = self.weather_presets[preset_name]
+    self.world.set_weather(carla.WeatherParameters(**weather_params))
 
   def _setup_spaces(self):
     """Define available actions like steering, and coupled throttle_brake, and observation space as Dict with image + goal."""
@@ -521,6 +531,18 @@ class CarlaEnv(gym.Env):
     self.lane_invasion = False
     self.lane_invasion_count = 0
 
+  def update_map_choices(self, maps: list):
+    """Update available maps for curriculum progression."""
+    self.available_maps = maps
+
+  def update_weather_choices(self, weathers: list):
+    """Update available weathers for curriculum progression."""
+    self.available_weathers = weathers
+
+  def update_traffic_density(self, density: str):
+    """Update traffic density for curriculum progression."""
+    self.traffic_density = density
+
   def reset(self, seed=None, options=None):
     """Reset the environment every episode with randomized elements each time."""
     super().reset(seed=seed)
@@ -532,7 +554,12 @@ class CarlaEnv(gym.Env):
 
     # Check if map should be changed based on frequency
     if self.episode_count % self.map_change_frequency == 0:
-      maps = self.phase_config['distribution']['maps']
+      maps = self.available_maps if self.available_maps else []
+      if not maps:
+        curriculum = self.phase_config.get('curriculum', {})
+        maps = curriculum.get('maps', [{}])[0].get('choices', [])
+        self.available_maps = maps
+
       new_map = np.random.choice(maps)
 
       # Only reload world if map actually changed

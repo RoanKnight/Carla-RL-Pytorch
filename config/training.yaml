@@ -1,21 +1,10 @@
-phase: 1
-name: "Learning basic driving skills on the simpler maps without traffic and weather"
+description: "Unified SAC CARLA training configuration with curriculum scheduling for progressive complexity"
 
 # Training configuration
 training:
   total_timesteps: 6000000
   eval_freq: 50000
   log_interval: 1
-
-# Episode configuration
-episode:
-  schedule:
-    - timesteps: 0
-      max_steps: 1500
-    - timesteps: 1000000
-      max_steps: 2500
-    - timesteps: 2000000
-      max_steps: 5000
 
 # Map randomization frequency in episodes
 map_randomization:
@@ -38,16 +27,27 @@ sac:
 logging:
   checkpoint_dir: checkpoints
 
-# Training distribution
-distribution:
+# Curriculum configurations: 
+curriculum:
+  episode_length:
+    - timesteps: 0
+      max_steps: 1500
+    - timesteps: 1000000
+      max_steps: 2500
+    - timesteps: 2000000
+      max_steps: 5000
+
   maps:
-    - Town01
-    - Town02
-    - Town07
+    - timesteps: 0
+      choices: [Town01, Town02, Town07]
+
   weathers:
-    - clear_noon
-    - clear_sunset
-  traffic: none
+    - timesteps: 0
+      choices: [clear_noon, clear_sunset]
+
+  traffic:
+    - timesteps: 0
+      density: none
 
 # Reward weights
 reward_weights:
