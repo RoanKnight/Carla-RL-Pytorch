@@ -74,16 +74,12 @@ class CarlaEnv(gym.Env):
     self.carla_map = None
     self.vehicle = None
     self.rgb_camera = None
-    self.rgb_camera_rear = None
     self.collision_sensor = None
     self.lane_invasion_sensor = None
     self._original_settings = None
     self._rgb_image = None
-    self._rgb_image_rear = None
     self.lane_invasion = False
     self.lane_invasion_count = 0
-    self.drive_mode = 'forward'
-    self.prev_drive_mode = 'forward'
     self.obs_width = None
     self.obs_height = None
 
@@ -151,12 +147,6 @@ class CarlaEnv(gym.Env):
 
     self.observation_space = spaces.Dict({
         "image_front": spaces.Box(
-            low=0,
-            high=255,
-            shape=(height, width, 3),
-            dtype=np.uint8
-        ),
-        "image_rear": spaces.Box(
             low=0,
             high=255,
             shape=(height, width, 3),
@@ -237,23 +227,16 @@ class CarlaEnv(gym.Env):
     return camera
 
   def _setup_sensors(self):
-    """Attach front/rear RGB cameras, collision sensor, and lane invasion sensor to vehicle."""
+    """Attach front RGB camera, collision sensor, and lane invasion sensor to vehicle."""
     obs_config = self.config.get('observation', {})
     width = obs_config.get('width', 640)
     height = obs_config.get('height', 480)
     fov = obs_config.get('fov', 90)
-    rear_fov = obs_config.get('rear_fov', 110)
 
     self.rgb_camera = self._spawn_camera(
         x=1.5, z=2.4, yaw=0.0, fov=fov,
         width=width, height=height,
         buffer_attr='_rgb_image'
-    )
-
-    self.rgb_camera_rear = self._spawn_camera(
-        x=-2.0, z=2.4, yaw=180.0, fov=rear_fov,
-        width=width, height=height,
-        buffer_attr='_rgb_image_rear'
     )
 
     current_env_instance = weakref.ref(self)
@@ -391,13 +374,10 @@ class CarlaEnv(gym.Env):
     return traffic_light_state, distance_to_stop
 
   def _get_observation(self):
-    """Return Dict observation with front/rear images, goal vector, traffic light state, and distance to stop."""
+    """Return Dict observation with front image, goal vector, traffic light state, and distance to stop."""
     height = self.obs_height if self.obs_height is not None else 84
     width = self.obs_width if self.obs_width is not None else 84
     image_front = self._rgb_image.copy() if self._rgb_image is not None else np.zeros(
-        (height, width, 3), dtype=np.uint8)
-
-    image_rear = self._rgb_image_rear.copy() if self._rgb_image_rear is not None else np.zeros(
         (height, width, 3), dtype=np.uint8)
 
     goal = self._compute_goal_vector()
@@ -429,7 +409,6 @@ class CarlaEnv(gym.Env):
 
     return {
         "image_front": image_front,
-        "image_rear": image_rear,
         "speed_limit": speed_limit_norm,
         "goal": goal,
         "traffic_light": tl_one_hot,
@@ -501,31 +480,26 @@ class CarlaEnv(gym.Env):
         'distance_to_stop': distance_to_stop,
         'lane_invasion': self.lane_invasion,
         'lane_invasion_count': self.lane_invasion_count,
-        'direction_changed': getattr(self, '_direction_changed_flag', False),
     }
 
   def _cleanup_actors(self):
     """Destroy all spawned actors in safe order to prevent memory leaks and stop callbacks: stop sensors, tick, destroy."""
     if self.rgb_camera is not None:
       self.rgb_camera.stop()
-    if self.rgb_camera_rear is not None:
-      self.rgb_camera_rear.stop()
     if self.collision_sensor is not None:
       self.collision_sensor.stop()
     if self.lane_invasion_sensor is not None:
       self.lane_invasion_sensor.stop()
 
-    for actor in [self.lane_invasion_sensor, self.collision_sensor, self.rgb_camera_rear, self.rgb_camera, self.vehicle]:
+    for actor in [self.lane_invasion_sensor, self.collision_sensor, self.rgb_camera, self.vehicle]:
       if actor is not None and actor.is_alive:
         actor.destroy()
 
     self.vehicle = None
     self.rgb_camera = None
-    self.rgb_camera_rear = None
     self.collision_sensor = None
     self.lane_invasion_sensor = None
     self._rgb_image = None
-    self._rgb_image_rear = None
     self.prev_state = None
     self.prev_action = None
     self.lane_invasion = False
@@ -600,8 +574,6 @@ class CarlaEnv(gym.Env):
     self.collision_occurred = False
     self.lane_invasion = False
     self.lane_invasion_count = 0
-    self.drive_mode = 'forward'
-    self.prev_drive_mode = 'forward'
 
     # Calculate initial distance to destination
     spawn_loc = self.spawn_points[self.spawn_idx].location
@@ -630,99 +602,34 @@ class CarlaEnv(gym.Env):
 
     ctrl_config = self.config.get('control', {})
     max_forward = float(ctrl_config.get('max_forward_speed', 60.0))
-    max_reverse = ctrl_config.get('max_reverse_speed', 10.0)
     speed_tolerance = ctrl_config.get('speed_tolerance', 1.0)
     gain = ctrl_config.get('proportional_gain', 0.1)
-
-    if target_speed_normalized >= 0:
-      target_speed_kmh = target_speed_normalized * max_forward
-    else:
-      target_speed_kmh = target_speed_normalized * max_reverse
+    
+    target_speed_kmh = max(
+        0.0, (target_speed_normalized + 1.0) / 2.0 * max_forward)
 
     current_speed_kmh = self._get_signed_speed()
+    speed_error = target_speed_kmh - current_speed_kmh
 
-    # Value thresholds for mode switching
-    REVERSE_ENTRY_THRESHOLD = -3.0
-    FORWARD_ENTRY_THRESHOLD = 3.0
-    STAY_THRESHOLD = 1.0
-
-    if self.drive_mode == 'forward':
-      if target_speed_kmh < REVERSE_ENTRY_THRESHOLD:
-        requested_mode = 'reverse'
-      elif target_speed_kmh > STAY_THRESHOLD:
-        requested_mode = 'forward'
-      else:
-        requested_mode = 'forward'
-    elif self.drive_mode == 'reverse':
-      if target_speed_kmh > FORWARD_ENTRY_THRESHOLD:
-        requested_mode = 'forward'
-      elif target_speed_kmh < -STAY_THRESHOLD:
-        requested_mode = 'reverse'
-      else:
-        requested_mode = 'reverse'
-    else:  # in stopping modes
-      if target_speed_kmh < -STAY_THRESHOLD:
-        requested_mode = 'reverse'
-      elif target_speed_kmh > STAY_THRESHOLD:
-        requested_mode = 'forward'
-      else:
-        requested_mode = self.drive_mode if 'reverse' in self.drive_mode else 'forward'
-
-    if self.drive_mode in ('forward', 'reverse') and requested_mode != self.drive_mode:
-      self.drive_mode = 'stopping_to_reverse' if requested_mode == 'reverse' else 'stopping_to_forward'
-
-    if self.drive_mode == 'stopping_to_reverse' and requested_mode == 'forward':
-      self.drive_mode = 'stopping_to_forward'
-    elif self.drive_mode == 'stopping_to_forward' and requested_mode == 'reverse':
-      self.drive_mode = 'stopping_to_reverse'
-
-    if self.drive_mode in ('stopping_to_reverse', 'stopping_to_forward'):
-      if abs(current_speed_kmh) > speed_tolerance:
-        throttle = 0.0
-        brake = min(max(abs(current_speed_kmh) * gain, 0.0), 1.0)
-        reverse_flag = current_speed_kmh < 0.0
-      else:
-        self.drive_mode = 'reverse' if self.drive_mode == 'stopping_to_reverse' else 'forward'
-        throttle = 0.0
-        brake = 0.0
-        reverse_flag = self.drive_mode == 'reverse'
+    if speed_error > speed_tolerance:
+      throttle = min(max(speed_error * gain, 0.0), 1.0)
+      brake = 0.0
+    elif speed_error < -speed_tolerance:
+      throttle = 0.0
+      brake = min(max(abs(speed_error) * gain, 0.0), 1.0)
     else:
-      reverse_flag = self.drive_mode == 'reverse'
-
-      mode_sign = -1.0 if reverse_flag else 1.0
-      target_speed_mode = mode_sign * target_speed_kmh
-      current_speed_mode = mode_sign * current_speed_kmh
-      speed_error_mode = target_speed_mode - current_speed_mode
-
-      if speed_error_mode > speed_tolerance:
-        throttle = min(max(speed_error_mode * gain, 0.0), 1.0)
-        brake = 0.0
-      elif speed_error_mode < -speed_tolerance:
-        throttle = 0.0
-        brake = min(max(abs(speed_error_mode) * gain, 0.0), 1.0)
-      else:
-        throttle = 0.0
-        brake = 0.0
+      throttle = 0.0
+      brake = 0.0
 
     control = carla.VehicleControl(
         steer=steer_command,
         throttle=throttle,
         brake=brake,
-        reverse=reverse_flag
+        reverse=False
     )
     self.vehicle.apply_control(control)
     self.world.tick()
     self.step_count += 1
-
-    # Detect direction change for reward penalty
-    direction_changed = False
-    if (self.prev_drive_mode in ('forward', 'reverse') and
-        self.drive_mode in ('forward', 'reverse') and
-            self.prev_drive_mode != self.drive_mode):
-      direction_changed = True
-
-    self._direction_changed_flag = direction_changed
-    self.prev_drive_mode = self.drive_mode
 
     observation = self._get_observation()
     state = self._get_vehicle_state()
