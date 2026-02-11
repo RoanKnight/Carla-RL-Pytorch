@@ -149,11 +149,11 @@ class CurriculumManager(BaseCallback):
     if dimension == 'episode_length':
       base_env.max_steps = value
     elif dimension == 'maps':
-      base_env.update_map_choices(value)
+      base_env.world_config.update_map_choices(value)
     elif dimension == 'weathers':
-      base_env.update_weather_choices(value)
+      base_env.world_config.update_weather_choices(value)
     elif dimension == 'traffic':
-      base_env.update_traffic_density(value)
+      base_env.world_config.update_traffic_density(value)
 
   def _on_step(self) -> bool:
     timesteps = self.num_timesteps

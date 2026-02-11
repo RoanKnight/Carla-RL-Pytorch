@@ -8,6 +8,7 @@ import carla
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 import weakref
 from utils import load_config
+import world_config
 
 class CarlaEnv(gym.Env):
   """Gymnasium wrapper for CARLA simulator."""
@@ -17,23 +18,20 @@ class CarlaEnv(gym.Env):
     super().__init__()
     self.config = load_config(config_path)
     self.phase_config = load_config(phase_config_path)
-    self.weather_presets = load_config(
-        'config/presets/weathers.yaml')['presets']
     self.reward_fn = reward_fn
     self.mode = mode
+
+    # Initialize world configuration manager
+    self.world_config = world_config.WorldConfig(
+        client=None,
+        phase_config=self.phase_config,
+        weather_presets=load_config('config/presets/weathers.yaml')['presets'],
+        mode=self.mode
+    )
 
     # Extract reward configuration for passing to reward function
     self.reward_weights = self.phase_config.get('reward_weights', {})
     self.speed_targets = self.phase_config.get('speed_targets', {})
-
-    # Map randomization frequency based on mode
-    map_config = self.phase_config.get('map_randomization', {})
-    if self.mode == 'train':
-      self.map_change_frequency = map_config.get(
-          'train_map_randomness_frequency', 1)
-    elif self.mode == 'test':
-      self.map_change_frequency = map_config.get(
-          'test_map_randomness_frequency', 1)
 
     # Episode state
     self.step_count = 0
@@ -47,17 +45,10 @@ class CarlaEnv(gym.Env):
     self.collision_occurred = False
     self.episode_count = 0
 
-    # Curriculum state (updated by CurriculumManager callback)
-    self.available_maps = []
-    self.available_weathers = []
-    self.traffic_density = 'none'
-
     # Spawn/destination tracking, randomised per episode
     self.spawn_idx = None
     self.dest_idx = None
     self.initial_distance = None
-    self.current_map = None
-    self.current_weather = None
 
     # Route planning
     self.route_planner = None
@@ -94,40 +85,15 @@ class CarlaEnv(gym.Env):
     )
     self.client.set_timeout(self.config['carla']['timeout'])
 
-    # Load random map from curriculum initial choices
+    # Set client in world_config
+    self.world_config.client = self.client
+
+    # Load initial world and weather
     curriculum = self.phase_config.get('curriculum', {})
-    maps = curriculum.get('maps', [{}])[0].get('choices', [])
-    self.available_maps = maps
-    self.current_map = np.random.choice(maps)
-    self.world = self.client.load_world(self.current_map)
+    self.world, self.carla_map, self.spawn_points, self.route_planner = \
+        self.world_config.setup_initial_world(curriculum, np.random)
+
     self._original_settings = self.world.get_settings()
-
-    settings = self.world.get_settings()
-    settings.synchronous_mode = True
-    settings.fixed_delta_seconds = 1.0 / 60.0
-    self.world.apply_settings(settings)
-
-    # Apply random weather from presets
-    self._apply_random_weather()
-
-    self.carla_map = self.world.get_map()
-    self.spawn_points = self.carla_map.get_spawn_points()
-
-    # Initialize route planner
-    self.route_planner = GlobalRoutePlanner(
-        self.carla_map, sampling_resolution=2.0)
-
-  def _apply_random_weather(self):
-    """Apply a random weather preset from curriculum choices."""
-    curriculum = self.phase_config.get('curriculum', {})
-    weather_list = curriculum.get('weathers', [{}])[
-        0].get('choices', ['clear_noon'])
-    if not weather_list:
-      weather_list = ['clear_noon']
-    preset_name = np.random.choice(weather_list)
-    self.current_weather = preset_name
-    weather_params = self.weather_presets[preset_name]
-    self.world.set_weather(carla.WeatherParameters(**weather_params))
 
   def _setup_spaces(self):
     """Define available actions like steering, and coupled throttle_brake, and observation space as Dict with image + goal."""
@@ -505,18 +471,6 @@ class CarlaEnv(gym.Env):
     self.lane_invasion = False
     self.lane_invasion_count = 0
 
-  def update_map_choices(self, maps: list):
-    """Update available maps for curriculum progression."""
-    self.available_maps = maps
-
-  def update_weather_choices(self, weathers: list):
-    """Update available weathers for curriculum progression."""
-    self.available_weathers = weathers
-
-  def update_traffic_density(self, density: str):
-    """Update traffic density for curriculum progression."""
-    self.traffic_density = density
-
   def reset(self, seed=None, options=None):
     """Reset the environment every episode with randomized elements each time."""
     super().reset(seed=seed)
@@ -526,38 +480,13 @@ class CarlaEnv(gym.Env):
     # Increment episode counter
     self.episode_count += 1
 
-    # Check if map should be changed based on frequency
-    if self.episode_count % self.map_change_frequency == 0:
-      maps = self.available_maps if self.available_maps else []
-      if not maps:
-        curriculum = self.phase_config.get('curriculum', {})
-        maps = curriculum.get('maps', [{}])[0].get('choices', [])
-        self.available_maps = maps
+    # Map selection and reloading
+    curriculum = self.phase_config.get('curriculum', {})
+    result = self.world_config.reset_episode(curriculum, self.np_random)
 
-      new_map = np.random.choice(maps)
-
-      # Only reload world if map actually changed
-      if new_map != self.current_map:
-        self.current_map = new_map
-        self.world = self.client.load_world(self.current_map)
-
-        # Apply synchronous settings after loading new world
-        settings = self.world.get_settings()
-        settings.synchronous_mode = True
-        settings.fixed_delta_seconds = 1.0 / 60.0
-        self.world.apply_settings(settings)
-        self._original_settings = self.world.get_settings()
-
-        # Refresh map-dependent objects
-        self.carla_map = self.world.get_map()
-        self.spawn_points = self.carla_map.get_spawn_points()
-
-        # Recreate route planner for new map
-        self.route_planner = GlobalRoutePlanner(
-            self.carla_map, sampling_resolution=2.0)
-
-    # Apply random weather for new episode
-    self._apply_random_weather()
+    if result is not None:
+      self.world, self.carla_map, self.spawn_points, self.route_planner = result
+      self._original_settings = self.world.get_settings()
 
     # Randomize spawn and destination indices
     num_spawn_points = len(self.spawn_points)
@@ -590,8 +519,8 @@ class CarlaEnv(gym.Env):
     observation = self._get_observation()
     info = self._get_vehicle_state()
     info['initial_distance'] = self.initial_distance
-    info['map'] = self.current_map
-    info['weather'] = self.current_weather
+    info['map'] = self.world_config.current_map
+    info['weather'] = self.world_config.current_weather
 
     return observation, info
 
@@ -604,7 +533,7 @@ class CarlaEnv(gym.Env):
     max_forward = float(ctrl_config.get('max_forward_speed', 60.0))
     speed_tolerance = ctrl_config.get('speed_tolerance', 1.0)
     gain = ctrl_config.get('proportional_gain', 0.1)
-    
+
     target_speed_kmh = max(
         0.0, (target_speed_normalized + 1.0) / 2.0 * max_forward)
 
@@ -647,7 +576,7 @@ class CarlaEnv(gym.Env):
     # Reward calculation with previous state for progress/smoothness
     reward = 0.0
     if self.reward_fn is not None:
-      # Pass action and prev_action separately; state is physical state only
+      # Pass action and prev_action separately
       prev_action = self.prev_action if self.prev_action is not None else np.zeros(
           2, dtype=np.float32)
       reward = self.reward_fn(state, action, self.prev_state, prev_action,
