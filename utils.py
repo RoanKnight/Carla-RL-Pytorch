@@ -37,7 +37,7 @@ def find_latest_checkpoint(checkpoint_dir: str) -> tuple:
   if not checkpoint_files:
     return None, None
 
-  # Sort by steps (extract number from filename)
+  # Sort by steps by extracting number from filename
   checkpoint_files.sort(key=lambda x: int(x.split('_')[-2]))
   latest_checkpoint = checkpoint_files[-1]
   checkpoint_steps = int(latest_checkpoint.split('_')[-2])

@@ -5,6 +5,7 @@ from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecTransposeImage
 from environment import CarlaEnv
+from augmentation import DrQDictFeaturesExtractor
 from reward import compute_reward
 
 def create_env(phase_config_path: str = 'config/training.yaml', vectorize: bool = True, mode: str = 'train'):
@@ -36,6 +37,16 @@ def create_agent(env, config: dict) -> SAC:
   Returns:
     Initialized SAC agent
   """
+  drq_config = config.get('drq', {})
+  policy_kwargs = dict(
+      features_extractor_class=DrQDictFeaturesExtractor,
+      features_extractor_kwargs={
+          'cnn_output_dim': int(drq_config.get('cnn_output_dim', 256)),
+          'drq_enabled': bool(drq_config.get('enabled', False)),
+          'drq_pad': int(drq_config.get('pad', 4)),
+      },
+  )
+
   agent = SAC(
       policy="MultiInputPolicy",
       env=env,
@@ -46,6 +57,7 @@ def create_agent(env, config: dict) -> SAC:
       tau=config['sac']['tau'],
       ent_coef=config['sac']['ent_coef'],
       learning_starts=config['sac']['learning_starts'],
+      policy_kwargs=policy_kwargs,
       verbose=0,
   )
   return agent
@@ -108,6 +120,7 @@ class EpisodeLogger(BaseCallback):
 
 class CurriculumManager(BaseCallback):
   """Manage multiple curriculum dimensions based on training progress."""
+
   def __init__(self, curriculum_config: dict, verbose: int = 1):
     super().__init__(verbose)
     self.curriculum = {}
@@ -132,6 +145,8 @@ class CurriculumManager(BaseCallback):
       return entry.get('choices', [])
     elif dimension == 'traffic':
       return entry.get('density', 'none')
+    elif dimension == 'drq':
+      return bool(entry.get('enabled', False))
     return None
 
   def _get_value_for_timestep(self, schedule: list, timesteps: int, dimension: str):
@@ -144,8 +159,27 @@ class CurriculumManager(BaseCallback):
         break
     return value
 
+  def _set_drq_enabled(self, enabled: bool):
+    """Toggle DrQ augmentation on all policy feature extractors."""
+    policy = getattr(self.model, 'policy', None)
+    if policy is None:
+      return
+
+    seen = set()
+    for module_name in ('actor', 'critic', 'critic_target'):
+      module = getattr(policy, module_name, None)
+      extractor = getattr(module, 'features_extractor',
+                          None) if module else None
+      if extractor is None or not hasattr(extractor, 'set_drq_enabled'):
+        continue
+      extractor_id = id(extractor)
+      if extractor_id in seen:
+        continue
+      extractor.set_drq_enabled(enabled)
+      seen.add(extractor_id)
+
   def _apply_change(self, base_env, dimension: str, value):
-    """Apply a curriculum change to the environment."""
+    """Apply a curriculum change to environment or model."""
     if dimension == 'episode_length':
       base_env.max_steps = value
     elif dimension == 'maps':
@@ -154,6 +188,14 @@ class CurriculumManager(BaseCallback):
       base_env.world_config.update_weather_choices(value)
     elif dimension == 'traffic':
       base_env.world_config.update_traffic_density(value)
+    elif dimension == 'drq':
+      self._set_drq_enabled(bool(value))
+
+  def _on_training_start(self) -> None:
+    """Apply initial curriculum values so model/env start in sync."""
+    base_env = self.training_env.venv.envs[0].env
+    for dimension, value in self.current_values.items():
+      self._apply_change(base_env, dimension, value)
 
   def _on_step(self) -> bool:
     timesteps = self.num_timesteps

@@ -23,6 +23,12 @@ sac:
   gradient_steps: 1
   learning_starts: 20000
 
+# DrQ augmentation settings (applies to image_front only)
+drq:
+  enabled: false
+  pad: 4
+  cnn_output_dim: 256
+
 # Logging configuration
 logging:
   checkpoint_dir: checkpoints
@@ -50,6 +56,10 @@ curriculum:
   traffic:
     - timesteps: 0
       density: none
+
+  drq:
+    - timesteps: 0
+      enabled: true
 
 # Reward weights
 reward_weights:
