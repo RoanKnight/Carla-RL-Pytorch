@@ -4,7 +4,7 @@ description: "Unified SAC CARLA training configuration with curriculum schedulin
 training:
   total_timesteps: 6000000
   eval_freq: 50000
-  log_interval: 1
+  log_interval: 3
 
 # Map randomization frequency in episodes
 map_randomization:
@@ -55,11 +55,11 @@ curriculum:
 
   traffic:
     - timesteps: 0
-      density: none
+      choices: [none, minimal]
 
   drq:
     - timesteps: 0
-      enabled: true
+      enabled: false
 
 # Reward weights
 reward_weights:

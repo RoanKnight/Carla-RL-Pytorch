@@ -88,6 +88,36 @@ def load_agent(model_path: str, env: CarlaEnv = None) -> SAC:
   """Load trained SAC agent from checkpoint."""
   return SAC.load(model_path, env=env)
 
+def apply_curriculum_for_timestep(base_env, config: dict, timestep: int) -> None:
+  """Apply curriculum settings for a given timestep to a non-vectorized env.
+
+  Replicates what CurriculumManager does during training, so testing a checkpoint from a checkpoint uses the same maps/weather/traffic/episode_length that were active
+  for that checkpoint during training.
+  """
+  curriculum = config.get('curriculum', {})
+  for dimension, schedule in curriculum.items():
+    if not isinstance(schedule, list) or len(schedule) == 0:
+      continue
+
+    schedule_sorted = sorted(schedule, key=lambda x: x['timesteps'])
+    active_entry = schedule_sorted[0]
+    for entry in schedule_sorted:
+      if timestep >= entry['timesteps']:
+        active_entry = entry
+      else:
+        break
+
+    if dimension == 'episode_length':
+      base_env.max_steps = active_entry.get('max_steps', base_env.max_steps)
+    elif dimension == 'maps':
+      base_env.world_config.update_map_choices(active_entry.get('choices', []))
+    elif dimension == 'weathers':
+      base_env.world_config.update_weather_choices(
+          active_entry.get('choices', []))
+    elif dimension == 'traffic':
+      base_env.world_config.update_traffic_choices(
+          active_entry.get('choices', ['none']))
+
 class EpisodeLogger(BaseCallback):
   """Log episode statistics to console during training."""
 
@@ -144,7 +174,7 @@ class CurriculumManager(BaseCallback):
     elif dimension == 'weathers':
       return entry.get('choices', [])
     elif dimension == 'traffic':
-      return entry.get('density', 'none')
+      return entry.get('choices', ['none'])
     elif dimension == 'drq':
       return bool(entry.get('enabled', False))
     return None
@@ -187,7 +217,7 @@ class CurriculumManager(BaseCallback):
     elif dimension == 'weathers':
       base_env.world_config.update_weather_choices(value)
     elif dimension == 'traffic':
-      base_env.world_config.update_traffic_density(value)
+      base_env.world_config.update_traffic_choices(value)
     elif dimension == 'drq':
       self._set_drq_enabled(bool(value))
 

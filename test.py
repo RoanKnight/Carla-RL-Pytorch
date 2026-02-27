@@ -1,23 +1,28 @@
 import argparse
 import carla
 import logging
-from sac_carla import create_env, load_agent
+from sac_carla import create_env, load_agent, apply_curriculum_for_timestep
 from utils import load_config, setup_logging, find_latest_checkpoint
 
 def test(model_path: str = None, episodes: int = 5):
   """Test trained agent with visual feedback."""
   setup_logging()
-  config = load_config('config/base.yaml')
+  base_config = load_config('config/base.yaml')
+  training_config = load_config('config/training.yaml')
 
   env = None
   try:
     if not model_path:
-      model_path, _ = find_latest_checkpoint('checkpoints')
+      model_path, checkpoint_steps = find_latest_checkpoint('checkpoints')
       if not model_path:
         raise FileNotFoundError(
             "No checkpoint found in 'checkpoints' directory")
+    else:
+      _, checkpoint_steps = find_latest_checkpoint('checkpoints')
+      checkpoint_steps = checkpoint_steps or 0
 
     logging.info(f"Testing agent from: {model_path}")
+    logging.info(f"Checkpoint steps: {checkpoint_steps} — applying matching curriculum")
     logging.info(f"Episodes: {episodes}")
 
     # Create non-vectorized env for direct access to CARLA
@@ -26,6 +31,15 @@ def test(model_path: str = None, episodes: int = 5):
 
     # Unwrap Monitor to access CarlaEnv directly
     carla_env = env.unwrapped
+
+    # Apply the curriculum settings that were active at checkpoint_steps during training
+    apply_curriculum_for_timestep(carla_env, training_config, checkpoint_steps)
+    logging.info(
+        f"Curriculum applied: maps={carla_env.world_config.available_maps}, "
+        f"weathers={carla_env.world_config.available_weathers}, "
+        f"traffic={carla_env.world_config.available_traffic_choices}, "
+        f"max_steps={carla_env.max_steps}"
+    )
     world = carla_env.world
     metrics = {
         'success': 0,
@@ -55,8 +69,8 @@ def test(model_path: str = None, episodes: int = 5):
         spectator_transform = spectator.get_transform()
         vehicle_transform = vehicle.get_transform()
         forward = spectator_transform.get_forward_vector()
-        location = vehicle_transform.location - forward * config['camera']['distance_behind'] + \
-            carla.Vector3D(z=config['camera']['height_above'])
+        location = vehicle_transform.location - forward * base_config['camera']['distance_behind'] + \
+            carla.Vector3D(z=base_config['camera']['height_above'])
         spectator.set_transform(carla.Transform(
             location, spectator_transform.rotation))
 

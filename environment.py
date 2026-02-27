@@ -26,6 +26,7 @@ class CarlaEnv(gym.Env):
         client=None,
         phase_config=self.phase_config,
         weather_presets=load_config('config/presets/weathers.yaml')['presets'],
+        traffic_presets=load_config('config/presets/traffic.yaml')['presets'],
         mode=self.mode
     )
 
@@ -91,7 +92,7 @@ class CarlaEnv(gym.Env):
     # Load initial world and weather
     curriculum = self.phase_config.get('curriculum', {})
     self.world, self.carla_map, self.spawn_points, self.route_planner = \
-        self.world_config.setup_initial_world(curriculum, np.random)
+        self.world_config.setup_initial_world(curriculum, np.random.default_rng())
 
     self._original_settings = self.world.get_settings()
 
@@ -521,6 +522,7 @@ class CarlaEnv(gym.Env):
     info['initial_distance'] = self.initial_distance
     info['map'] = self.world_config.current_map
     info['weather'] = self.world_config.current_weather
+    info['traffic'] = self.world_config.current_traffic
 
     return observation, info
 
@@ -615,5 +617,6 @@ class CarlaEnv(gym.Env):
   def close(self):
     """Clean up CARLA resources."""
     self._cleanup_actors()
+    self.world_config.teardown_traffic()
     if self._original_settings is not None:
       self.world.apply_settings(self._original_settings)
