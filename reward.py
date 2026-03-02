@@ -51,7 +51,8 @@ def compute_reward(state: dict, action: np.ndarray, prev_state: dict,
 
   speed = state.get('speed', 0.0)
   speed_min = speed_targets['min']
-  speed_max = speed_targets['max']
+  speed_max = min(speed_targets['max'], state.get(
+      'speed_limit_kmh', speed_targets['max']))
   if speed_min <= speed <= speed_max:
     reward += weights['speed_bonus']
   elif speed < speed_min:
@@ -78,6 +79,18 @@ def compute_reward(state: dict, action: np.ndarray, prev_state: dict,
 
   if state.get('collision', False):
     reward -= weights['collision']
+
+  vehicle_dist = state.get('nearest_vehicle_dist', 50.0)
+  if vehicle_dist < 15.0:
+    reward -= weights['proximity_vehicle'] * (1.0 - vehicle_dist / 15.0)
+
+  ped_dist = state.get('nearest_pedestrian_dist', 20.0)
+  if ped_dist < 8.0:
+    reward -= weights['proximity_pedestrian'] * (1.0 - ped_dist / 8.0)
+
+  ttc = state.get('ttc', 10.0)
+  if ttc < 4.0:
+    reward -= weights['ttc_penalty'] * (1.0 - ttc / 4.0)
 
   light_state = state.get('traffic_light_state', 'none')
   distance_to_stop = state.get('distance_to_stop', 999.0)

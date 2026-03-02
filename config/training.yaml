@@ -77,6 +77,9 @@ reward_weights:
   traffic_light_compliance: 0.5
   red_light_violation: 200.0
   holding_at_red: 0.5
+  proximity_vehicle: 5.0
+  proximity_pedestrian: 10.0
+  ttc_penalty: 8.0
 
 # Speed targets for driving
 speed_targets:

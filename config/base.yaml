@@ -20,7 +20,7 @@ lane_detection:
 control:
   max_forward_speed: 60.0
   speed_tolerance: 1.0
-  proportional_gain: 0.1
+  proportional_gain: 0.3
 
 # Spectator camera configuration for test visualization
 camera:
