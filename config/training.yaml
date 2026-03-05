@@ -4,12 +4,12 @@ description: "Unified SAC CARLA training configuration with curriculum schedulin
 training:
   total_timesteps: 6000000
   eval_freq: 50000
-  log_interval: 3
+  log_interval: 4
 
 # Map randomization frequency in episodes
 map_randomization:
   train_map_randomness_frequency: 20
-  test_map_randomness_frequency: 2
+  test_map_randomness_frequency: 1
 
 # SAC hyperparameters
 sac:
@@ -25,7 +25,6 @@ sac:
 
 # DrQ augmentation settings (applies to image_front only)
 drq:
-  enabled: false
   pad: 4
   cnn_output_dim: 256
 
@@ -59,7 +58,7 @@ curriculum:
 
   drq:
     - timesteps: 0
-      enabled: false
+      enabled: true
 
 # Reward weights
 reward_weights:
@@ -69,19 +68,17 @@ reward_weights:
   speed_penalty: 0.02  
   lane_deviation: 0.2   
   off_road: 3.0 
-  lane_invasion: 50.0
-  collision: 200.0
-  steering_smoothness: 0.2
-  throttle_brake_smoothness: 0.1
-  success: 300.0
+  lane_invasion: 25.0
+  collision: 100.0
+  steering_smoothness: 0.4
+  throttle_brake_smoothness: 0.2
+  success: 200.0
   traffic_light_compliance: 0.5
-  red_light_violation: 200.0
+  red_light_violation: 100.0
   holding_at_red: 0.5
   proximity_vehicle: 5.0
   proximity_pedestrian: 10.0
   ttc_penalty: 8.0
 
-# Speed targets for driving
-speed_targets:
-  min: 20.0
-  max: 40.0
+# Minimum speed as a fraction of the road speed limit (0.5 = must drive at least 50% of limit)
+min_speed_fraction: 0.5

@@ -2,7 +2,7 @@
 carla:
   host: localhost
   port: 2000
-  timeout: 10.0
+  timeout: 30.0
 
 # Vehicle configuration
 vehicle:
@@ -18,7 +18,7 @@ lane_detection:
   max_lane_deviation: 5.0
 
 control:
-  max_forward_speed: 60.0
+  max_forward_speed: 90.0
   speed_tolerance: 1.0
   proportional_gain: 0.3
 

@@ -42,7 +42,6 @@ def create_agent(env, config: dict) -> SAC:
       features_extractor_class=DrQDictFeaturesExtractor,
       features_extractor_kwargs={
           'cnn_output_dim': int(drq_config.get('cnn_output_dim', 256)),
-          'drq_enabled': bool(drq_config.get('enabled', False)),
           'drq_pad': int(drq_config.get('pad', 4)),
       },
   )
@@ -88,7 +87,7 @@ def load_agent(model_path: str, env: CarlaEnv = None) -> SAC:
   """Load trained SAC agent from checkpoint."""
   return SAC.load(model_path, env=env)
 
-def apply_curriculum_for_timestep(base_env, config: dict, timestep: int) -> None:
+def apply_curriculum_for_timestep(base_env, config: dict, timestep: int, agent=None) -> None:
   """Apply curriculum settings for a given timestep to a non-vectorized env.
 
   Replicates what CurriculumManager does during training, so testing a checkpoint from a checkpoint uses the same maps/weather/traffic/episode_length that were active
@@ -117,6 +116,11 @@ def apply_curriculum_for_timestep(base_env, config: dict, timestep: int) -> None
     elif dimension == 'traffic':
       base_env.world_config.update_traffic_choices(
           active_entry.get('choices', ['none']))
+    elif dimension == 'drq' and agent is not None:
+      drq_enabled = bool(active_entry.get('enabled', False))
+      curriculum_mgr = CurriculumManager(curriculum)
+      curriculum_mgr.model = agent
+      curriculum_mgr._set_drq_enabled(drq_enabled)
 
 class EpisodeLogger(BaseCallback):
   """Log episode statistics to console during training."""
@@ -128,6 +132,19 @@ class EpisodeLogger(BaseCallback):
     self.current_episode_reward = 0.0
     self.current_episode_steps = 0
 
+  def _format_episode_outcome(self, end_reason: str, end_note: str) -> str:
+    """Format episode end reason and note into concise display string."""
+    if end_reason == 'success':
+      return 'SUCCESS'
+    elif end_reason == 'failure_collision':
+      return 'FAIL: Collision'
+    elif end_reason == 'failure_red_light_violation':
+      return f'FAIL: {end_note}'.replace('Crossed stop line on red at ', 'Crossed red at ')
+    elif end_reason == 'failure_timeout':
+      return f'FAIL: {end_note}'.replace('Reached max steps ', 'Timeout ')
+    else:
+      return f'FAIL: {end_note}' if end_note else 'FAIL: Unknown'
+
   def _on_step(self) -> bool:
     step_reward = float(self.locals["rewards"][0])
     episode_finished = self.locals["dones"][0]
@@ -136,11 +153,21 @@ class EpisodeLogger(BaseCallback):
 
     if episode_finished:
       self.episode_count += 1
+      episode_info = {}
+      infos = self.locals.get("infos")
+      if isinstance(infos, (list, tuple)) and infos:
+        first_info = infos[0]
+        if isinstance(first_info, dict):
+          episode_info = first_info
+
       if self.episode_count % self.log_interval == 0:
+        end_reason = episode_info.get("episode_end_reason") or "unknown"
+        end_note = episode_info.get("episode_end_note") or ""
+        outcome = self._format_episode_outcome(end_reason, end_note)
         print(
             f"Episode {self.episode_count:4d} | "
             f"Reward {self.current_episode_reward:8.2f} | "
-            f"Steps {self.current_episode_steps:4d}",
+            f"Steps {self.current_episode_steps:4d} | {outcome}",
             flush=True
         )
       self.current_episode_reward = 0.0

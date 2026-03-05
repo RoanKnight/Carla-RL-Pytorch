@@ -131,11 +131,9 @@ class WorldConfig:
     self._teardown_traffic()
 
   def _setup_traffic_manager(self):
-    """Initialize TrafficManager with synchronous and hybrid physics mode."""
+    """Initialize TrafficManager in synchronous mode with full physics for all NPC vehicles."""
     self.traffic_manager = self.client.get_trafficmanager(8000)
     self.traffic_manager.set_synchronous_mode(True)
-    self.traffic_manager.set_hybrid_physics_mode(True)
-    self.traffic_manager.set_hybrid_physics_radius(70.0)
 
   def _spawn_vehicles(self, preset, rng):
     """Batch-spawn NPC vehicles under TrafficManager autopilot."""

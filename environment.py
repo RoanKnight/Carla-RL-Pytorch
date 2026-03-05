@@ -32,7 +32,7 @@ class CarlaEnv(gym.Env):
 
     # Extract reward configuration for passing to reward function
     self.reward_weights = self.phase_config.get('reward_weights', {})
-    self.speed_targets = self.phase_config.get('speed_targets', {})
+    self.min_speed_fraction = self.phase_config.get('min_speed_fraction', 0.5)
 
     # Episode state
     self.step_count = 0
@@ -99,10 +99,10 @@ class CarlaEnv(gym.Env):
     self._original_settings = self.world.get_settings()
 
   def _setup_spaces(self):
-    """Define available actions like steering, and coupled throttle_brake, and observation space as Dict with image + goal."""
-    # Action space: steering [-1,1], left/right, throttle_brake [-1,1], forward/backward
+    """Define available actions: steer [-1,1] and speed [0,1] where 0=stop and 1=max_forward_speed."""
+    # Action space: steer [-1,1] left/right, speed [0,1] where 1 maps to max_forward_speed km/h
     self.action_space = spaces.Box(
-        low=np.array([-1.0, -1.0], dtype=np.float32),
+        low=np.array([-1.0, 0.0], dtype=np.float32),
         high=np.array([1.0, 1.0], dtype=np.float32),
         dtype=np.float32
     )
@@ -170,7 +170,6 @@ class CarlaEnv(gym.Env):
     vehicle_blueprint = self.world.get_blueprint_library().filter(
         self.config['vehicle']['model']
     )[0]
-
     self.vehicle = self.world.try_spawn_actor(
         vehicle_blueprint,
         self.spawn_points[self.spawn_idx]
@@ -384,26 +383,31 @@ class CarlaEnv(gym.Env):
       actor_location = actor.get_location()
       relative_x = actor_location.x - ego_vehicle_location.x
       relative_y = actor_location.y - ego_vehicle_location.y
-      actor_distance = (relative_x * relative_x + relative_y * relative_y) ** 0.5
+      actor_distance = (relative_x * relative_x +
+                        relative_y * relative_y) ** 0.5
       if actor_distance < 0.1 or actor_distance > vehicle_max_detection_range:
         continue
-      forward_alignment = (ego_forward_vector.x * relative_x + ego_forward_vector.y * relative_y) / actor_distance
+      forward_alignment = (ego_forward_vector.x * relative_x +
+                           ego_forward_vector.y * relative_y) / actor_distance
       if forward_alignment < vehicle_forward_arc_threshold:  # Outside 45-degree forward arc
         continue
       if actor_distance < nearest_vehicle_distance:
         nearest_vehicle_distance = actor_distance
         actor_velocity = actor.get_velocity()
-        nearest_vehicle_speed_kmh = (actor_velocity.x**2 + actor_velocity.y**2 + actor_velocity.z**2) ** 0.5 * 3.6
+        nearest_vehicle_speed_kmh = (
+            actor_velocity.x**2 + actor_velocity.y**2 + actor_velocity.z**2) ** 0.5 * 3.6
 
     nearest_pedestrian_distance = pedestrian_max_detection_range
     for actor in all_world_actors.filter('walker.pedestrian.*'):
       actor_location = actor.get_location()
       relative_x = actor_location.x - ego_vehicle_location.x
       relative_y = actor_location.y - ego_vehicle_location.y
-      actor_distance = (relative_x * relative_x + relative_y * relative_y) ** 0.5
+      actor_distance = (relative_x * relative_x +
+                        relative_y * relative_y) ** 0.5
       if actor_distance < 0.1 or actor_distance > pedestrian_max_detection_range:
         continue
-      forward_alignment = (ego_forward_vector.x * relative_x + ego_forward_vector.y * relative_y) / actor_distance
+      forward_alignment = (ego_forward_vector.x * relative_x +
+                           ego_forward_vector.y * relative_y) / actor_distance
       if forward_alignment < 0.0:  # Outside frontal hemisphere
         continue
       if actor_distance < nearest_pedestrian_distance:
@@ -413,7 +417,8 @@ class CarlaEnv(gym.Env):
     lead_vehicle_speed_ms = nearest_vehicle_speed_kmh / 3.6
     closing_speed_ms = ego_speed_ms - lead_vehicle_speed_ms
     if closing_speed_ms > 0.5 and nearest_vehicle_distance < vehicle_max_detection_range:
-      time_to_collision = min(nearest_vehicle_distance / closing_speed_ms, 10.0)
+      time_to_collision = min(
+          nearest_vehicle_distance / closing_speed_ms, 10.0)
     else:
       time_to_collision = 10.0
 
@@ -455,8 +460,10 @@ class CarlaEnv(gym.Env):
     tl_one_hot = tl_one_hot_map.get(
         traffic_light_state, tl_one_hot_map['none'])
 
-    distance_clipped = np.clip(distance_to_stop, 0.0, 50.0)
-    distance_normalized = np.array([distance_clipped / 50.0], dtype=np.float32)
+    # Preserve signed stop distance information while normalizing to [0, 1].
+    distance_clipped = np.clip(distance_to_stop, -50.0, 50.0)
+    distance_normalized = np.array(
+        [(distance_clipped + 50.0) / 100.0], dtype=np.float32)
 
     # Compute proximity once per step and cache for _get_vehicle_state()
     self._cached_proximity = self._get_nearest_actor_distances(
@@ -637,12 +644,11 @@ class CarlaEnv(gym.Env):
     target_speed_normalized = float(action[1])
 
     ctrl_config = self.config.get('control', {})
-    max_forward = float(ctrl_config.get('max_forward_speed', 60.0))
+    max_forward = float(ctrl_config.get('max_forward_speed', 120.0))
     speed_tolerance = ctrl_config.get('speed_tolerance', 1.0)
-    gain = ctrl_config.get('proportional_gain', 0.1)
+    gain = ctrl_config.get('proportional_gain', 0.3)
 
-    target_speed_kmh = max(
-        0.0, (target_speed_normalized + 1.0) / 2.0 * max_forward)
+    target_speed_kmh = target_speed_normalized * max_forward
 
     current_speed_kmh = self._get_signed_speed()
     speed_error = target_speed_kmh - current_speed_kmh
@@ -687,7 +693,7 @@ class CarlaEnv(gym.Env):
       prev_action = self.prev_action if self.prev_action is not None else np.zeros(
           2, dtype=np.float32)
       reward = self.reward_fn(state, action, self.prev_state, prev_action,
-                              self.reward_weights, self.speed_targets)
+                              self.reward_weights, self.min_speed_fraction)
 
     # Store current state/action for next step
     self.prev_state = state.copy()
@@ -696,26 +702,41 @@ class CarlaEnv(gym.Env):
     # Reset lane invasion flag for next step
     self.lane_invasion = False
 
-    # Termination: collision or reached destination
-    terminated = self.collision_occurred
-    if state['distance_to_destination'] < 2.0:
-      terminated = True
-
-    # Red-light violation termination
-    red_light_violation = False
-    if (state['traffic_light_state'] == 'red' and
+    # Set termination conditions for collisions and red light violations
+    collision_termination = self.collision_occurred
+    reached_destination = state['distance_to_destination'] < 2.0
+    red_light_violation = (
+        state['traffic_light_state'] == 'red' and
         state['distance_to_stop'] > 0.0 and
-            state['speed'] > 5.0):
-      terminated = True
-      red_light_violation = True
+        state['speed'] > 5.0
+    )
+    terminated = collision_termination or reached_destination or red_light_violation
 
     # Episode timeout: max steps reached
     episode_timeout = self.step_count >= self.max_steps
+
+    episode_end_reason = ''
+    episode_end_note = ''
+    if collision_termination:
+      episode_end_reason = 'failure_collision'
+      episode_end_note = 'Collision detected.'
+    elif red_light_violation:
+      episode_end_reason = 'failure_red_light_violation'
+      episode_end_note = (
+          f"Crossed stop line on red at {state['speed']:.1f} km/h.")
+    elif reached_destination:
+      episode_end_reason = 'success'
+      episode_end_note = 'Reached destination.'
+    elif episode_timeout:
+      episode_end_reason = 'failure_timeout'
+      episode_end_note = f"Reached max steps ({self.max_steps})."
 
     info = state
     info['step'] = self.step_count
     info['initial_distance'] = self.initial_distance
     info['red_light_violation'] = red_light_violation
+    info['episode_end_reason'] = episode_end_reason
+    info['episode_end_note'] = episode_end_note
 
     return observation, reward, terminated, episode_timeout, info
 
