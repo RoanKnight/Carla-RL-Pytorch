@@ -5,7 +5,6 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import carla
-from agents.navigation.global_route_planner import GlobalRoutePlanner
 import weakref
 from utils import load_config
 import world_config
@@ -26,7 +25,6 @@ class CarlaEnv(gym.Env):
         client=None,
         phase_config=self.phase_config,
         weather_presets=load_config('config/presets/weathers.yaml')['presets'],
-        traffic_presets=load_config('config/presets/traffic.yaml')['presets'],
         mode=self.mode
     )
 
@@ -74,7 +72,6 @@ class CarlaEnv(gym.Env):
     self.lane_invasion_count = 0
     self.obs_width = None
     self.obs_height = None
-    self._cached_proximity = None
 
     self._setup_carla()
     self._setup_spaces()
@@ -142,24 +139,6 @@ class CarlaEnv(gym.Env):
         "distance_to_stop": spaces.Box(
             low=0,
             high=1,
-            shape=(1,),
-            dtype=np.float32
-        ),
-        "nearest_vehicle": spaces.Box(
-            low=0.0,
-            high=1.0,
-            shape=(1,),
-            dtype=np.float32
-        ),
-        "nearest_pedestrian": spaces.Box(
-            low=0.0,
-            high=1.0,
-            shape=(1,),
-            dtype=np.float32
-        ),
-        "ttc": spaces.Box(
-            low=0.0,
-            high=1.0,
             shape=(1,),
             dtype=np.float32
         ),
@@ -359,78 +338,8 @@ class CarlaEnv(gym.Env):
 
     return traffic_light_state, distance_to_stop
 
-  def _get_nearest_actor_distances(self, ego_speed_kmh: float) -> dict:
-    """Compute nearest forward vehicle and nearest frontal pedestrian distances.
-
-    Returns:
-      dict with nearest_vehicle_dist, lead_vehicle_speed_kmh, nearest_pedestrian_dist, ttc
-    """
-    vehicle_max_detection_range = 50.0
-    pedestrian_max_detection_range = 20.0
-    vehicle_forward_arc_threshold = 0.707  # cos(45°) for forward arc filtering
-
-    ego_vehicle_transform = self.vehicle.get_transform()
-    ego_vehicle_location = ego_vehicle_transform.location
-    ego_forward_vector = ego_vehicle_transform.get_forward_vector()
-
-    all_world_actors = self.world.get_actors()
-
-    nearest_vehicle_distance = vehicle_max_detection_range
-    nearest_vehicle_speed_kmh = 0.0
-    for actor in all_world_actors.filter('vehicle.*'):
-      if actor.id == self.vehicle.id:
-        continue
-      actor_location = actor.get_location()
-      relative_x = actor_location.x - ego_vehicle_location.x
-      relative_y = actor_location.y - ego_vehicle_location.y
-      actor_distance = (relative_x * relative_x +
-                        relative_y * relative_y) ** 0.5
-      if actor_distance < 0.1 or actor_distance > vehicle_max_detection_range:
-        continue
-      forward_alignment = (ego_forward_vector.x * relative_x +
-                           ego_forward_vector.y * relative_y) / actor_distance
-      if forward_alignment < vehicle_forward_arc_threshold:  # Outside 45-degree forward arc
-        continue
-      if actor_distance < nearest_vehicle_distance:
-        nearest_vehicle_distance = actor_distance
-        actor_velocity = actor.get_velocity()
-        nearest_vehicle_speed_kmh = (
-            actor_velocity.x**2 + actor_velocity.y**2 + actor_velocity.z**2) ** 0.5 * 3.6
-
-    nearest_pedestrian_distance = pedestrian_max_detection_range
-    for actor in all_world_actors.filter('walker.pedestrian.*'):
-      actor_location = actor.get_location()
-      relative_x = actor_location.x - ego_vehicle_location.x
-      relative_y = actor_location.y - ego_vehicle_location.y
-      actor_distance = (relative_x * relative_x +
-                        relative_y * relative_y) ** 0.5
-      if actor_distance < 0.1 or actor_distance > pedestrian_max_detection_range:
-        continue
-      forward_alignment = (ego_forward_vector.x * relative_x +
-                           ego_forward_vector.y * relative_y) / actor_distance
-      if forward_alignment < 0.0:  # Outside frontal hemisphere
-        continue
-      if actor_distance < nearest_pedestrian_distance:
-        nearest_pedestrian_distance = actor_distance
-
-    ego_speed_ms = ego_speed_kmh / 3.6
-    lead_vehicle_speed_ms = nearest_vehicle_speed_kmh / 3.6
-    closing_speed_ms = ego_speed_ms - lead_vehicle_speed_ms
-    if closing_speed_ms > 0.5 and nearest_vehicle_distance < vehicle_max_detection_range:
-      time_to_collision = min(
-          nearest_vehicle_distance / closing_speed_ms, 10.0)
-    else:
-      time_to_collision = 10.0
-
-    return {
-        'nearest_vehicle_dist': nearest_vehicle_distance,
-        'lead_vehicle_speed_kmh': nearest_vehicle_speed_kmh,
-        'nearest_pedestrian_dist': nearest_pedestrian_distance,
-        'ttc': time_to_collision,
-    }
-
   def _get_observation(self):
-    """Return Dict observation with front image, goal vector, traffic light state, distance to stop, and proximity signals."""
+    """Return Dict observation with front image, goal vector, and traffic-light signals."""
     height = self.obs_height if self.obs_height is not None else 84
     width = self.obs_width if self.obs_width is not None else 84
     image_front = self._rgb_image.copy() if self._rgb_image is not None else np.zeros(
@@ -465,32 +374,18 @@ class CarlaEnv(gym.Env):
     distance_normalized = np.array(
         [(distance_clipped + 50.0) / 100.0], dtype=np.float32)
 
-    # Compute proximity once per step and cache for _get_vehicle_state()
-    self._cached_proximity = self._get_nearest_actor_distances(
-        self._get_signed_speed())
-    nearest_vehicle_norm = np.array(
-        [self._cached_proximity['nearest_vehicle_dist'] / 50.0], dtype=np.float32)
-    nearest_ped_norm = np.array(
-        [self._cached_proximity['nearest_pedestrian_dist'] / 20.0], dtype=np.float32)
-    ttc_norm = np.array(
-        [self._cached_proximity['ttc'] / 10.0], dtype=np.float32)
-
     return {
         "image_front": image_front,
         "speed_limit": speed_limit_norm,
         "goal": goal,
         "traffic_light": tl_one_hot,
         "distance_to_stop": distance_normalized,
-        "nearest_vehicle": nearest_vehicle_norm,
-        "nearest_pedestrian": nearest_ped_norm,
-        "ttc": ttc_norm,
     }
 
   def _get_vehicle_state(self):
     """Get current vehicle state for reward calculation and info."""
     vehicle_transform = self.vehicle.get_transform()
     vehicle_location = vehicle_transform.location
-    velocity = self.vehicle.get_velocity()
     speed = self._get_signed_speed()
 
     destination = self.spawn_points[self.dest_idx].location
@@ -536,9 +431,6 @@ class CarlaEnv(gym.Env):
     speed_limit_kmh = float(self.vehicle.get_speed_limit()
                             ) if self.vehicle is not None else 0.0
 
-    proximity = self._cached_proximity if self._cached_proximity is not None else \
-        self._get_nearest_actor_distances(speed)
-
     return {
         'location': (vehicle_location.x, vehicle_location.y, vehicle_location.z),
         'rotation': (vehicle_transform.rotation.pitch, vehicle_transform.rotation.yaw, vehicle_transform.rotation.roll),
@@ -554,10 +446,6 @@ class CarlaEnv(gym.Env):
         'distance_to_stop': distance_to_stop,
         'lane_invasion': self.lane_invasion,
         'lane_invasion_count': self.lane_invasion_count,
-        'nearest_vehicle_dist': proximity['nearest_vehicle_dist'],
-        'lead_vehicle_speed_kmh': proximity['lead_vehicle_speed_kmh'],
-        'nearest_pedestrian_dist': proximity['nearest_pedestrian_dist'],
-        'ttc': proximity['ttc'],
     }
 
   def _cleanup_actors(self):
@@ -582,7 +470,6 @@ class CarlaEnv(gym.Env):
     self.prev_action = None
     self.lane_invasion = False
     self.lane_invasion_count = 0
-    self._cached_proximity = None
 
   def reset(self, seed=None, options=None):
     """Reset the environment every episode with randomized elements each time."""
@@ -634,7 +521,6 @@ class CarlaEnv(gym.Env):
     info['initial_distance'] = self.initial_distance
     info['map'] = self.world_config.current_map
     info['weather'] = self.world_config.current_weather
-    info['traffic'] = self.world_config.current_traffic
 
     return observation, info
 
@@ -743,6 +629,5 @@ class CarlaEnv(gym.Env):
   def close(self):
     """Clean up CARLA resources."""
     self._cleanup_actors()
-    self.world_config.teardown_traffic()
     if self._original_settings is not None:
       self.world.apply_settings(self._original_settings)

@@ -90,7 +90,7 @@ def load_agent(model_path: str, env: CarlaEnv = None) -> SAC:
 def apply_curriculum_for_timestep(base_env, config: dict, timestep: int, agent=None) -> None:
   """Apply curriculum settings for a given timestep to a non-vectorized env.
 
-  Replicates what CurriculumManager does during training, so testing a checkpoint from a checkpoint uses the same maps/weather/traffic/episode_length that were active
+  Replicates what CurriculumManager does during training, so testing a checkpoint uses the same maps/weather/episode_length settings that were active
   for that checkpoint during training.
   """
   curriculum = config.get('curriculum', {})
@@ -113,9 +113,6 @@ def apply_curriculum_for_timestep(base_env, config: dict, timestep: int, agent=N
     elif dimension == 'weathers':
       base_env.world_config.update_weather_choices(
           active_entry.get('choices', []))
-    elif dimension == 'traffic':
-      base_env.world_config.update_traffic_choices(
-          active_entry.get('choices', ['none']))
     elif dimension == 'drq' and agent is not None:
       drq_enabled = bool(active_entry.get('enabled', False))
       curriculum_mgr = CurriculumManager(curriculum)
@@ -200,8 +197,6 @@ class CurriculumManager(BaseCallback):
       return entry.get('choices', [])
     elif dimension == 'weathers':
       return entry.get('choices', [])
-    elif dimension == 'traffic':
-      return entry.get('choices', ['none'])
     elif dimension == 'drq':
       return bool(entry.get('enabled', False))
     return None
@@ -243,8 +238,6 @@ class CurriculumManager(BaseCallback):
       base_env.world_config.update_map_choices(value)
     elif dimension == 'weathers':
       base_env.world_config.update_weather_choices(value)
-    elif dimension == 'traffic':
-      base_env.world_config.update_traffic_choices(value)
     elif dimension == 'drq':
       self._set_drq_enabled(bool(value))
 

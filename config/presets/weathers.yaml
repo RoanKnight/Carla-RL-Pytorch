@@ -1,5 +1,6 @@
 # Weather presets for CARLA environment for random weather selection each episode
 presets:
+  # Clear conditions
   clear_noon:
     cloudiness: 0.0
     precipitation: 0.0
@@ -19,3 +20,87 @@ presets:
     sun_azimuth_angle: 270.0
     fog_density: 0.0
     wetness: 0.0
+
+  # Cloudy conditions
+  cloudy_noon:
+    cloudiness: 50.0
+    precipitation: 0.0
+    precipitation_deposits: 0.0
+    wind_intensity: 10.0
+    sun_altitude_angle: 90.0
+    sun_azimuth_angle: 0.0
+    fog_density: 0.0
+    wetness: 0.0
+
+  cloudy_sunset:
+    cloudiness: 60.0
+    precipitation: 0.0
+    precipitation_deposits: 0.0
+    wind_intensity: 15.0
+    sun_altitude_angle: 15.0
+    sun_azimuth_angle: 270.0
+    fog_density: 0.0
+    wetness: 0.0
+
+  # Rainy conditions (wet roads, reduced visibility)
+  rainy_noon:
+    cloudiness: 80.0
+    precipitation: 30.0
+    precipitation_deposits: 40.0
+    wind_intensity: 20.0
+    sun_altitude_angle: 60.0
+    sun_azimuth_angle: 0.0
+    fog_density: 10.0
+    wetness: 80.0
+
+  rainy_sunset:
+    cloudiness: 85.0
+    precipitation: 40.0
+    precipitation_deposits: 50.0
+    wind_intensity: 25.0
+    sun_altitude_angle: 10.0
+    sun_azimuth_angle: 270.0
+    fog_density: 15.0
+    wetness: 90.0
+
+  # Heavy rain conditions
+  heavy_rain_noon:
+    cloudiness: 100.0
+    precipitation: 80.0
+    precipitation_deposits: 80.0
+    wind_intensity: 40.0
+    sun_altitude_angle: 45.0
+    sun_azimuth_angle: 0.0
+    fog_density: 25.0
+    wetness: 100.0
+
+  heavy_rain_sunset:
+    cloudiness: 100.0
+    precipitation: 90.0
+    precipitation_deposits: 90.0
+    wind_intensity: 50.0
+    sun_altitude_angle: 5.0
+    sun_azimuth_angle: 270.0
+    fog_density: 25.0
+    wetness: 100.0
+
+  # Foggy conditions (visibility challenge)
+  foggy_noon:
+    cloudiness: 100.0
+    precipitation: 0.0
+    precipitation_deposits: 0.0
+    wind_intensity: 5.0
+    sun_altitude_angle: 90.0
+    sun_azimuth_angle: 0.0
+    fog_density: 40.0
+    wetness: 0.0
+
+  foggy_sunset:
+    cloudiness: 100.0
+    precipitation: 10.0
+    precipitation_deposits: 10.0
+    wind_intensity: 10.0
+    sun_altitude_angle: 15.0
+    sun_azimuth_angle: 270.0
+    fog_density: 60.0
+    wetness: 40.0

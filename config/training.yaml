@@ -32,7 +32,7 @@ drq:
 logging:
   checkpoint_dir: checkpoints
 
-# Curriculum configurations: 
+# Curriculum configurations: progressive difficulty over training
 curriculum:
   episode_length:
     - timesteps: 0
@@ -46,15 +46,27 @@ curriculum:
 
   maps:
     - timesteps: 0
-      choices: [Town01, Town02, Town07]
+      choices: [Town01_Opt, Town02_Opt]
+    - timesteps: 500000
+      choices: [Town01_Opt, Town02_Opt, Town03_Opt]
+    - timesteps: 1500000
+      choices: [Town01_Opt, Town02_Opt, Town03_Opt, Town04_Opt]
+    - timesteps: 3000000
+      choices: [Town01_Opt, Town02_Opt, Town03_Opt, Town04_Opt, Town05_Opt]
+    - timesteps: 4500000
+      choices: [Town01_Opt, Town02_Opt, Town03_Opt, Town04_Opt, Town05_Opt, Town10HD_Opt]
 
   weathers:
     - timesteps: 0
       choices: [clear_noon, clear_sunset]
-
-  traffic:
-    - timesteps: 0
-      choices: [none, minimal]
+    - timesteps: 500000
+      choices: [clear_noon, clear_sunset, cloudy_noon, cloudy_sunset]
+    - timesteps: 1500000
+      choices: [clear_noon, clear_sunset, cloudy_noon, cloudy_sunset, rainy_noon, rainy_sunset]
+    - timesteps: 2500000
+      choices: [clear_noon, clear_sunset, cloudy_noon, cloudy_sunset, rainy_noon, rainy_sunset, heavy_rain_noon, heavy_rain_sunset]
+    - timesteps: 4000000
+      choices: [clear_noon, clear_sunset, cloudy_noon, cloudy_sunset, rainy_noon, rainy_sunset, heavy_rain_noon, heavy_rain_sunset, foggy_noon, foggy_sunset]
 
   drq:
     - timesteps: 0
@@ -76,9 +88,6 @@ reward_weights:
   traffic_light_compliance: 0.5
   red_light_violation: 100.0
   holding_at_red: 0.5
-  proximity_vehicle: 5.0
-  proximity_pedestrian: 10.0
-  ttc_penalty: 8.0
 
 # Minimum speed as a fraction of the road speed limit (0.5 = must drive at least 50% of limit)
 min_speed_fraction: 0.5
