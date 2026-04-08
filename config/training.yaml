@@ -1,93 +1,81 @@
-description: "Unified SAC CARLA training configuration with curriculum scheduling for progressive complexity"
+phase: 1
+name: "Learning basic driving skills on progressively harder opt maps and weather"
 
 # Training configuration
 training:
   total_timesteps: 6000000
-  eval_freq: 50000
-  log_interval: 4
+  eval_freq: 100000
+  log_interval: 1
+
+# Episode configuration
+episode:
+  max_steps: 5000
 
 # Map randomization frequency in episodes
 map_randomization:
-  train_map_randomness_frequency: 20
-  test_map_randomness_frequency: 1
+  train_map_randomness_frequency: 40
+  test_map_randomness_frequency: 2
 
 # SAC hyperparameters
 sac:
-  learning_rate: 0.0003
+  learning_rate: 0.0001
   buffer_size: 100000
-  batch_size: 256 
+  batch_size: 256
   gamma: 0.99
-  tau: 0.005
+  tau: 0.002
   ent_coef: auto
   train_freq: 1
   gradient_steps: 1
-  learning_starts: 20000
-
-# DrQ augmentation settings (applies to image_front only)
-drq:
-  pad: 4
-  cnn_output_dim: 256
+  learning_starts: 50000
 
 # Logging configuration
 logging:
   checkpoint_dir: checkpoints
 
-# Curriculum configurations: progressive difficulty over training
+# Curriculum schedule
 curriculum:
   episode_length:
     - timesteps: 0
       max_steps: 1500
-    - timesteps: 100000
-      max_steps: 2500
+    - timesteps: 250000
+      max_steps: 4000
+    - timesteps: 500000
+      max_steps: 6000
     - timesteps: 1000000
-      max_steps: 3500
-    - timesteps: 2000000
-      max_steps: 5000
-
+      max_steps: 8000
   maps:
     - timesteps: 0
-      choices: [Town01_Opt, Town02_Opt]
-    - timesteps: 500000
-      choices: [Town01_Opt, Town02_Opt, Town03_Opt]
-    - timesteps: 1500000
-      choices: [Town01_Opt, Town02_Opt, Town03_Opt, Town04_Opt]
-    - timesteps: 3000000
-      choices: [Town01_Opt, Town02_Opt, Town03_Opt, Town04_Opt, Town05_Opt]
-    - timesteps: 4500000
-      choices: [Town01_Opt, Town02_Opt, Town03_Opt, Town04_Opt, Town05_Opt, Town10HD_Opt]
-
+      choices: [Town01_Opt, Town02_Opt, Town07_Opt]
   weathers:
     - timesteps: 0
       choices: [clear_noon, clear_sunset]
-    - timesteps: 500000
+    - timesteps: 750000
       choices: [clear_noon, clear_sunset, cloudy_noon, cloudy_sunset]
     - timesteps: 1500000
       choices: [clear_noon, clear_sunset, cloudy_noon, cloudy_sunset, rainy_noon, rainy_sunset]
     - timesteps: 2500000
-      choices: [clear_noon, clear_sunset, cloudy_noon, cloudy_sunset, rainy_noon, rainy_sunset, heavy_rain_noon, heavy_rain_sunset]
-    - timesteps: 4000000
       choices: [clear_noon, clear_sunset, cloudy_noon, cloudy_sunset, rainy_noon, rainy_sunset, heavy_rain_noon, heavy_rain_sunset, foggy_noon, foggy_sunset]
-
-  drq:
+  traffic_lights:
     - timesteps: 0
-      enabled: true
+      enabled: false
 
 # Reward weights
 reward_weights:
-  waypoint_progress: 1.0 
-  waypoint_reached: 10.0 
-  speed_bonus: 0.2       
-  speed_penalty: 0.02  
-  lane_deviation: 0.2   
-  off_road: 3.0 
-  lane_invasion: 25.0
+  waypoint_progress: 4.0
+  target_speed_compliance: 0.03
+  lane_deviation: 0.3
+  smoothness_steer: 0.70
+  smoothness_accel_brake: 0.60
   collision: 100.0
-  steering_smoothness: 0.4
-  throttle_brake_smoothness: 0.2
-  success: 200.0
-  traffic_light_compliance: 0.5
-  red_light_violation: 100.0
-  holding_at_red: 0.5
+  success: 100.0
+  traffic_light_violation: 50.0
 
-# Minimum speed as a fraction of the road speed limit (0.5 = must drive at least 50% of limit)
-min_speed_fraction: 0.5
+# Speed-limit-based driving targets
+speed_limit:
+  target_fraction: 0.90
+  red_light_ramp_m_per_kmh: 1.25
+
+# Camera augmentation (DrQ)
+augmentation:
+  drq_enabled: false
+  drq_pad: 4

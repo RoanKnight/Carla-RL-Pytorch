@@ -7,7 +7,7 @@ def train():
   setup_logging()
   config = load_config('config/training.yaml')
   logging.info(
-      f"Training SAC on CARLA - {config['description']}")
+      f"Training SAC on CARLA - Phase {config['phase']}: {config['name']}")
   logging.info(f"Total timesteps: {config['training']['total_timesteps']}")
 
   env = create_env(mode='train')

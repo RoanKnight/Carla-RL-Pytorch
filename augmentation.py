@@ -70,7 +70,7 @@ class DrQDictFeaturesExtractor(BaseFeaturesExtractor):
       raise TypeError(
           "DrQDictFeaturesExtractor expects a Dict observation space")
 
-    self.image_key = "image_front"
+    self.image_key = "image"
     if self.image_key not in observation_space.spaces:
       raise KeyError(
           f"Expected '{self.image_key}' in observation space keys {list(observation_space.spaces.keys())}"
