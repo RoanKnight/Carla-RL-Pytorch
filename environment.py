@@ -27,8 +27,6 @@ class CarlaEnv(gym.Env):
         'config/presets/weathers.yaml')['presets']
     self.reward_fn = reward_fn
     self.mode = mode
-    self.debug_env_info = bool(
-        self.config.get('debug', {}).get('env_info', False))
 
     # Extract reward configuration for passing to reward function
     self.reward_weights = self.phase_config.get('reward_weights', {})
@@ -53,8 +51,10 @@ class CarlaEnv(gym.Env):
         environment_config.get('traffic_light_lookahead_waypoints', 30))
     self.traffic_light_detection_max_distance_meters = float(
         environment_config.get('traffic_light_detection_max_distance_meters', 200.0))
-    self.off_road_margin_meters = float(
-        environment_config.get('off_road_margin_meters', 0.5))
+    self.waypoint_distance_timeout_threshold_meters = float(
+        environment_config.get('waypoint_distance_timeout_threshold_meters', 10.0))
+    self.waypoint_distance_timeout_steps = int(
+        environment_config.get('waypoint_distance_timeout_steps', 150))
     self.traffic_light_release_distance_meters = float(
         environment_config.get('traffic_light_release_distance_meters', 2.0))
     self.traffic_lights_enabled = self._get_initial_traffic_lights_enabled()
@@ -70,13 +70,10 @@ class CarlaEnv(gym.Env):
 
     # Episode state
     self.step_count = 0
-    self.max_steps = self.phase_config.get(
-        'episode', {}).get('max_steps', 1000)
+    self.max_steps = 10000
     self.collision_occurred = False
     self.episode_count = 0
-    self._off_road_steps = 0
-    self._off_road_termination_steps = int(
-        self.config.get('lane_detection', {}).get('off_road_termination_steps', 200))
+    self._waypoint_timeout_steps = 0
 
     # Spawn/destination tracking, randomised per episode
     self.spawn_idx = None
@@ -312,7 +309,7 @@ class CarlaEnv(gym.Env):
 
   def _get_speed_observation_clip_kmh(self):
     """Return the clip value used for normalized speed observations."""
-    return float(self.speed_config.get('max_forward_speed_kmh', 40.0))
+    return float(self.speed_config.get('max_forward_speed_kmh', 90.0))
 
   def _get_current_speed_kmh(self):
     """Return the vehicle's current speed in km/h."""
@@ -507,14 +504,32 @@ class CarlaEnv(gym.Env):
            self.route[self.current_waypoint_idx][0].transform.location) < self.route_progress_reached_distance_meters):
       self.current_waypoint_idx += 1
 
+  def _compute_current_waypoint_distance(self, vehicle_location):
+    """Compute 2D distance to the currently tracked route waypoint."""
+    if len(self.route) == 0 or self.current_waypoint_idx >= len(self.route):
+      return 0.0
+
+    current_waypoint_loc = self.route[self.current_waypoint_idx][0].transform.location
+    return float(np.sqrt(
+        (vehicle_location.x - current_waypoint_loc.x)**2 +
+        (vehicle_location.y - current_waypoint_loc.y)**2
+    ))
+
+  def _update_waypoint_timeout_counter(self, waypoint_distance):
+    """Track consecutive steps spent too far from the current tracked waypoint."""
+    if waypoint_distance > self.waypoint_distance_timeout_threshold_meters:
+      self._waypoint_timeout_steps += 1
+    else:
+      self._waypoint_timeout_steps = 0
+
   def _compute_lane_metrics(self, vehicle_location):
-    """Compute lane deviation, signed lateral error, and off-road status."""
+    """Compute lane deviation and signed lateral error."""
     waypoint = self._get_nearest_route_waypoint(vehicle_location)
     max_lane_deviation = float(self.config.get(
         'lane_detection', {}).get('max_lane_deviation', 5.0))
 
     if waypoint is None:
-      return max_lane_deviation, 0.0, True
+      return max_lane_deviation, 0.0
 
     wp_location = waypoint.transform.location
     dx = float(vehicle_location.x - wp_location.x)
@@ -526,11 +541,7 @@ class CarlaEnv(gym.Env):
     right_vector = waypoint.transform.get_right_vector()
     lane_error_signed = float(dx * right_vector.x + dy * right_vector.y)
 
-    off_road_threshold = (waypoint.lane_width / 2.0) + \
-        self.off_road_margin_meters
-    off_road = lane_deviation_2d > off_road_threshold
-
-    return lane_deviation, lane_error_signed, off_road
+    return lane_deviation, lane_error_signed
 
   def _normalize_signed_lane_error_observation(self, lane_error_signed_m):
     """Normalize signed lane error to [-1, 1]."""
@@ -722,7 +733,7 @@ class CarlaEnv(gym.Env):
     goal = self._compute_goal_vector()
     current_speed_kmh = self._get_current_speed_kmh()
     speed_limit_kmh = self._get_current_speed_limit_kmh()
-    _, lane_error_signed, _ = self._step_lane_metrics
+    _, lane_error_signed = self._step_lane_metrics
 
     traffic_light_state = 'none'
     distance_to_stop = 999.0
@@ -782,16 +793,9 @@ class CarlaEnv(gym.Env):
         (vehicle_location.y - destination.y)**2
     )
 
-    # Compute distance to current waypoint
-    waypoint_distance = 0.0
-    if len(self.route) > 0 and self.current_waypoint_idx < len(self.route):
-      current_waypoint_loc = self.route[self.current_waypoint_idx][0].transform.location
-      waypoint_distance = np.sqrt(
-          (vehicle_location.x - current_waypoint_loc.x)**2 +
-          (vehicle_location.y - current_waypoint_loc.y)**2
-      )
-
-    lane_deviation, lane_error_signed, off_road = self._step_lane_metrics
+    waypoint_distance = self._compute_current_waypoint_distance(
+        vehicle_location)
+    lane_deviation, lane_error_signed = self._step_lane_metrics
 
     traffic_light_state = 'none'
     distance_to_stop = 999.0
@@ -823,20 +827,13 @@ class CarlaEnv(gym.Env):
         'reward_target_speed_kmh': reward_target_speed_kmh,
         'lane_deviation': lane_deviation,
         'lane_error_signed': lane_error_signed,
-        'off_road': off_road,
-        'off_road_steps': self._off_road_steps,
+        'waypoint_timeout_steps': self._waypoint_timeout_steps,
         'traffic_light_state': traffic_light_state,
         'distance_to_stop': distance_to_stop,
         'traffic_light_violation': traffic_light_violation,
         'traffic_lights_enabled': self._traffic_lights_active(),
         'speed_error_kmh': float(speed - reward_target_speed_kmh),
     }
-
-    if self.debug_env_info:
-      state.update({
-          'tracked_light_state': traffic_light_state,
-          'tracked_light_distance': distance_to_stop,
-      })
 
     return state
 
@@ -865,7 +862,7 @@ class CarlaEnv(gym.Env):
     self._tl_state = 'none'
     self._tl_distance = 999.0
     self._clear_tracked_traffic_light()
-    self._off_road_steps = 0
+    self._waypoint_timeout_steps = 0
     self._last_control = {
         'accel_brake': 0.0,
         'throttle': 0.0,
@@ -998,12 +995,9 @@ class CarlaEnv(gym.Env):
     self._tl_state, self._tl_distance = self._detect_traffic_light(
         vehicle_location)
     self._step_lane_metrics = self._compute_lane_metrics(vehicle_location)
-
-    _, lane_error_signed, _ = self._step_lane_metrics
-    max_lane_deviation = float(self.config.get(
-        'lane_detection', {}).get('max_lane_deviation', 5.0))
-    lane_error_maxed = abs(lane_error_signed) >= max_lane_deviation
-    self._off_road_steps = self._off_road_steps + 1 if lane_error_maxed else 0
+    waypoint_distance = self._compute_current_waypoint_distance(
+        vehicle_location)
+    self._update_waypoint_timeout_counter(waypoint_distance)
 
     self.last_action = action.copy()
 
@@ -1034,7 +1028,7 @@ class CarlaEnv(gym.Env):
     if state['traffic_light_violation']:
       terminated = True
 
-    if self._off_road_steps >= self._off_road_termination_steps:
+    if self._waypoint_timeout_steps >= self.waypoint_distance_timeout_steps:
       terminated = True
 
     # Episode timeout: max steps reached

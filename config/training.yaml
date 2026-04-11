@@ -1,15 +1,10 @@
-phase: 1
-name: "Learning basic driving skills on progressively harder opt maps and weather"
+description: "Learning driving skills with progressively harder opt maps and weather"
 
 # Training configuration
 training:
   total_timesteps: 6000000
   eval_freq: 100000
-  log_interval: 1
-
-# Episode configuration
-episode:
-  max_steps: 5000
+  log_interval: 2
 
 # Map randomization frequency in episodes
 map_randomization:
@@ -18,15 +13,15 @@ map_randomization:
 
 # SAC hyperparameters
 sac:
-  learning_rate: 0.0001
+  learning_rate: 0.0002
   buffer_size: 100000
   batch_size: 256
   gamma: 0.99
-  tau: 0.002
+  tau: 0.001
   ent_coef: auto
   train_freq: 1
   gradient_steps: 1
-  learning_starts: 50000
+  learning_starts: 30000
 
 # Logging configuration
 logging:
@@ -36,36 +31,40 @@ logging:
 curriculum:
   episode_length:
     - timesteps: 0
-      max_steps: 1500
-    - timesteps: 250000
-      max_steps: 4000
+      max_steps: 2000
     - timesteps: 500000
+      max_steps: 4000
+    - timesteps: 1250000
       max_steps: 6000
-    - timesteps: 1000000
+    - timesteps: 2500000
       max_steps: 8000
   maps:
     - timesteps: 0
       choices: [Town01_Opt, Town02_Opt, Town07_Opt]
+    # - timesteps: 1000000
+    #   choices: [Town01_Opt, Town02_Opt, Town03_Opt, Town05_Opt, Town07_Opt]
+    # - timesteps: 2500000
+    #   choices: [Town01_Opt, Town02_Opt, Town03_Opt, Town05_Opt, Town07_Opt, Town10HD_Opt]
   weathers:
     - timesteps: 0
       choices: [clear_noon, clear_sunset]
     - timesteps: 750000
-      choices: [clear_noon, clear_sunset, cloudy_noon, cloudy_sunset]
-    - timesteps: 1500000
       choices: [clear_noon, clear_sunset, cloudy_noon, cloudy_sunset, rainy_noon, rainy_sunset]
-    - timesteps: 2500000
+    - timesteps: 2000000
       choices: [clear_noon, clear_sunset, cloudy_noon, cloudy_sunset, rainy_noon, rainy_sunset, heavy_rain_noon, heavy_rain_sunset, foggy_noon, foggy_sunset]
   traffic_lights:
     - timesteps: 0
       enabled: false
+    - timesteps: 2500000
+      enabled: true
 
 # Reward weights
 reward_weights:
-  waypoint_progress: 4.0
+  waypoint_progress: 3.0
   target_speed_compliance: 0.03
   lane_deviation: 0.3
-  smoothness_steer: 0.70
-  smoothness_accel_brake: 0.60
+  smoothness_steer: 0.50
+  smoothness_accel_brake: 0.40
   collision: 100.0
   success: 100.0
   traffic_light_violation: 50.0

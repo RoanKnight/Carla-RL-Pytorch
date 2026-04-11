@@ -16,14 +16,14 @@ from utils import setup_logging, find_latest_checkpoint
 from augmentation import RandomShiftAug
 
 DEBUG_CONFIG = {
-    'map': 'Town02',
+    'map': 'Town10HD_Opt',
     'weather': 'clear_noon',
     'max_steps': 5000,
     'episodes': 3,
     'control_mode': 'idle',  # 'idle' or 'rl'
     'agent_path': None,
     'traffic_lights_enabled_override': False,
-    'log_every_n_steps': 1,
+    'log_every_n_steps': 30,
     'save_image_on_first_step': True,
     'save_drq_image_on_first_step': True,
     'camera_snapshot_max_wait_steps': 30,
@@ -297,7 +297,7 @@ def run(config: dict | None = None) -> None:
 
       if spectator is None:
         spectator = env.world.get_spectator()
-      _set_spectator_at_vehicle(env, spectator)
+      _set_spectator_at_vehicle(env, spectator, debug_config)
 
       _print_waypoint_vectors(env)
 
@@ -308,7 +308,8 @@ def run(config: dict | None = None) -> None:
       pending_drq_snapshot = bool(
           debug_config['save_drq_image_on_first_step'] and getattr(env, 'camera_enabled', False))
       snapshot_warned = False
-      prev_off_road = bool(info.get('off_road', False))
+      prev_waypoint_timeout_active = int(
+          info.get('waypoint_timeout_steps', 0)) > 0
       prev_tl_state = info.get('traffic_light_state', 'none')
 
       while not done:
@@ -373,16 +374,26 @@ def run(config: dict | None = None) -> None:
         if step % debug_config['log_every_n_steps'] == 0 or done:
           _log_step(step, info, reward, action, obs)
 
-        current_off_road = bool(info.get('off_road', False))
-        if current_off_road != prev_off_road:
-          logging.info(
-              "Step %4d: off_road %s -> %s (off_road_steps=%d)",
-              step,
-              prev_off_road,
-              current_off_road,
-              int(info.get('off_road_steps', 0)),
-          )
-          prev_off_road = current_off_road
+        current_waypoint_timeout_steps = int(
+            info.get('waypoint_timeout_steps', 0))
+        current_waypoint_timeout_active = current_waypoint_timeout_steps > 0
+        if current_waypoint_timeout_active != prev_waypoint_timeout_active:
+          if current_waypoint_timeout_active:
+            logging.info(
+                "Step %4d: waypoint-timeout tracking started (dist_to_wp=%.1fm, counter=%d/%d, threshold=%.1fm)",
+                step,
+                float(info.get('waypoint_distance', 0.0)),
+                current_waypoint_timeout_steps,
+                int(getattr(env, 'waypoint_distance_timeout_steps', 0)),
+                float(getattr(env, 'waypoint_distance_timeout_threshold_meters', 0.0)),
+            )
+          else:
+            logging.info(
+                "Step %4d: waypoint-timeout tracking cleared (dist_to_wp=%.1fm)",
+                step,
+                float(info.get('waypoint_distance', 0.0)),
+            )
+          prev_waypoint_timeout_active = current_waypoint_timeout_active
 
         current_tl_state = info.get('traffic_light_state', 'none')
         if current_tl_state != prev_tl_state:
@@ -397,12 +408,13 @@ def run(config: dict | None = None) -> None:
 
       logging.info(
           "Episode %d ended: steps=%d collision=%s red_violation=%s "
-          "off_road_steps=%d dest=%.1fm",
+          "waypoint_timeout_steps=%d waypoint_distance=%.1fm dest=%.1fm",
           episode,
           step,
           info.get('collision', False),
           info.get('traffic_light_violation', False),
-          int(info.get('off_road_steps', 0)),
+          int(info.get('waypoint_timeout_steps', 0)),
+          float(info.get('waypoint_distance', 0.0)),
           info.get('distance_to_destination', 0.0),
       )
 
