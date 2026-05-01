@@ -1,9 +1,17 @@
 import argparse
-import carla
 import logging
 import re
-from sac_carla import create_env, load_agent, apply_curriculum_for_timestep
-from utils import load_config, setup_logging, find_latest_checkpoint
+
+import carla
+
+from sac_carla import (
+  apply_curriculum_for_timestep,
+  create_env,
+  get_agent_type,
+  get_checkpoint_dir,
+  load_agent,
+)
+from utils import find_latest_checkpoint, load_config, setup_logging
 
 def _extract_checkpoint_steps(model_path: str):
   """Extract training step count from checkpoint filename."""
@@ -12,19 +20,29 @@ def _extract_checkpoint_steps(model_path: str):
     return None
   return int(match.group(1))
 
-def test(model_path: str = None, episodes: int = 5):
+def test(model_path: str = None, episodes: int = 5, agent_choice: str = "auto"):
   """Test trained agent with visual feedback."""
   setup_logging()
   config = load_config('config/base.yaml')
   training_config = load_config('config/training.yaml')
+  requested_variant = get_agent_type(agent_choice=agent_choice)
+  active_env_variant = get_agent_type(agent_choice="auto")
+  checkpoint_dir = get_checkpoint_dir(training_config, requested_variant)
+
+  if requested_variant != active_env_variant:
+    raise ValueError(
+        "Agent choice does not match current base camera setting. "
+        f"Requested variant '{requested_variant}', but base config resolves to '{active_env_variant}'. "
+        "Use '--agent auto' or update observation.use_camera in config/base.yaml."
+    )
 
   env = None
   try:
     if not model_path:
-      model_path, checkpoint_steps = find_latest_checkpoint('checkpoints')
+      model_path, checkpoint_steps = find_latest_checkpoint(checkpoint_dir)
       if not model_path:
         raise FileNotFoundError(
-            "No checkpoint found in 'checkpoints' directory")
+            f"No checkpoint found in '{checkpoint_dir}' directory")
     else:
       checkpoint_steps = _extract_checkpoint_steps(model_path)
       if checkpoint_steps is None:
@@ -34,29 +52,31 @@ def test(model_path: str = None, episodes: int = 5):
             model_path,
         )
 
+    logging.info(f"Agent variant: {requested_variant}")
+    logging.info(f"Checkpoint directory: {checkpoint_dir}")
     logging.info(f"Testing agent from: {model_path}")
     logging.info(
         f"Checkpoint steps: {checkpoint_steps} - applying matching curriculum")
     logging.info(f"Episodes: {episodes}")
 
     # Create non-vectorized env for direct access to CARLA
-    env = create_env(vectorize=False, mode='test')
-    agent = load_agent(model_path, env=env)
+    env = create_env(vectorize=False, mode='test',
+                     agent_variant=requested_variant)
+    agent = load_agent(model_path, env=env, agent_variant=requested_variant)
 
     # Unwrap Monitor to access CarlaEnv directly
     carla_env = env.unwrapped
-    apply_curriculum_for_timestep(carla_env, training_config, checkpoint_steps, agent=agent)
-    applied_distribution = carla_env.phase_config.get('distribution', {})
+    apply_curriculum_for_timestep(carla_env, training_config, checkpoint_steps)
+    applied_distribution = carla_env.phase_config['distribution']
     logging.info(
       "Curriculum applied: maps=%s, weathers=%s, max_steps=%s",
-      applied_distribution.get('maps', []),
-      applied_distribution.get('weathers', []),
+      applied_distribution['maps'],
+      applied_distribution['weathers'],
       carla_env.max_steps,
     )
-    world = carla_env.world
-
     for ep in range(episodes):
       obs, info = env.reset()
+      world = carla_env.world
       vehicle = carla_env.vehicle
       spectator = world.get_spectator()
       destination = carla_env.spawn_points[carla_env.dest_idx].location
@@ -109,6 +129,13 @@ if __name__ == "__main__":
       "--model", type=str, help="Path to model checkpoint (defaults to most recent)")
   parser.add_argument("--episodes", type=int, default=5,
                       help="Number of episodes")
+  parser.add_argument(
+      "--agent",
+      type=str,
+      default="auto",
+      choices=["auto", "camera", "no_camera"],
+      help="Agent variant to test: auto (from base config), camera (DrQ), or no_camera (plain SAC)",
+  )
 
   args = parser.parse_args()
-  test(model_path=args.model, episodes=args.episodes)
+  test(model_path=args.model, episodes=args.episodes, agent_choice=args.agent)

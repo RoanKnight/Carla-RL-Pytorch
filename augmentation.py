@@ -1,10 +1,9 @@
 import numpy as np
 import torch
 from gymnasium import spaces
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor, NatureCNN
 from torch import nn
 from torch.nn import functional as F
-
-from stable_baselines3.common.torch_layers import BaseFeaturesExtractor, NatureCNN
 
 class RandomShiftAug(nn.Module):
   """DrQ-style random shift augmentation (replicate pad + random crop)."""
@@ -54,14 +53,12 @@ class RandomShiftAug(nn.Module):
     return shifted_image
 
 class DrQDictFeaturesExtractor(BaseFeaturesExtractor):
-  """Multi-input extractor with optional DrQ augmentation on image_front only."""
+  """Custom extractor for DrQ that encodes image observations with a CNN and flattens other inputs."""
 
   def __init__(
       self,
       observation_space: spaces.Dict,
       cnn_output_dim: int = 256,
-      drq_enabled: bool = False,
-      drq_pad: int = 4,
       normalized_image: bool = False,
   ):
     super().__init__(observation_space, features_dim=1)
@@ -76,8 +73,6 @@ class DrQDictFeaturesExtractor(BaseFeaturesExtractor):
           f"Expected '{self.image_key}' in observation space keys {list(observation_space.spaces.keys())}"
       )
 
-    self.drq_enabled = bool(drq_enabled)
-    self.random_shift = RandomShiftAug(pad=drq_pad)
     self.extractors = nn.ModuleDict()
 
     # Build separate extractors for each observation key
@@ -97,9 +92,6 @@ class DrQDictFeaturesExtractor(BaseFeaturesExtractor):
         total_feature_size += int(np.prod(obs_subspace.shape))
 
     self._features_dim = total_feature_size
-
-  def set_drq_enabled(self, enabled: bool) -> None:
-    self.drq_enabled = bool(enabled)
 
   @staticmethod
   def _to_channel_first(image: torch.Tensor) -> torch.Tensor:
@@ -126,9 +118,6 @@ class DrQDictFeaturesExtractor(BaseFeaturesExtractor):
       obs_tensor = observations[obs_key]
       if obs_key == self.image_key:
         obs_tensor = self._to_channel_first(obs_tensor)
-        # Apply random shift augmentation only during training if DrQ is enabled
-        if self.training and self.drq_enabled:
-          obs_tensor = self.random_shift(obs_tensor)
       encoded_features.append(extractor(obs_tensor))
 
     # Concatenate all encoded features into single vector for SAC

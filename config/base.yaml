@@ -2,7 +2,7 @@
 carla:
   host: localhost
   port: 2000
-  timeout: 20.0
+  timeout: 30.0
 
 # Vehicle configuration
 vehicle:
@@ -10,18 +10,18 @@ vehicle:
 
 # Observation configuration for RGB sensor for RL
 observation:
-  use_camera: false
+  use_camera: true
   width: 84
   height: 84
   fov: 90
 
 environment:
-  route_sampling_resolution: 4.0
+  route_sampling_resolution: 3.0
   route_progress_reached_distance_meters: 2.0
   destination_success_distance_meters: 2.0
-  traffic_light_lookahead_waypoints: 30
-  traffic_light_detection_max_distance_meters: 200.0
-  waypoint_distance_timeout_threshold_meters: 8.0
+  traffic_light_lookahead_waypoints: 25
+  traffic_light_context_range_m: 75.0
+  waypoint_distance_timeout_threshold_meters: 6.0
   waypoint_distance_timeout_steps: 200
   traffic_light_release_distance_meters: 2.0
 
@@ -30,7 +30,7 @@ lane_detection:
 
 # Vehicle control limits
 control:
-  max_forward_speed: 90.0
+  max_forward_speed: 80.0
 
 # Spectator camera configuration for test visualization
 camera:

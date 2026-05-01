@@ -1,19 +1,22 @@
 import sys
+
 sys.path.append(r'C:\Carla\PythonAPI\carla')
 
 import logging
-
-import gymnasium as gym
-from gymnasium import spaces
-import numpy as np
-import carla
-from agents.navigation.global_route_planner import GlobalRoutePlanner
 import weakref
+
+import carla
+import gymnasium as gym
+import numpy as np
+from agents.navigation.global_route_planner import GlobalRoutePlanner
+from gymnasium import spaces
+
+from reward import compute_reward, compute_reward_with_components, compute_target_speed
 from utils import load_config
-from reward import compute_reward, compute_reward_with_components, compute_target_speed, compute_cruise_speed_target
 
 _GOAL_NORMALIZATION_METERS = 10.0
-_STOP_DISTANCE_CLIP_METERS = 100.0
+_NO_TRAFFIC_LIGHT_STATE = 'none'
+_NO_STOP_DISTANCE_METERS = 999.0
 
 class CarlaEnv(gym.Env):
   """Gymnasium wrapper for CARLA simulator."""
@@ -29,44 +32,44 @@ class CarlaEnv(gym.Env):
     self.mode = mode
 
     # Extract reward configuration for passing to reward function
-    self.reward_weights = self.phase_config.get('reward_weights', {})
-    control_config = self.config.get('control', {})
-    observation_config = self.config.get('observation', {})
-    environment_config = self.config.get('environment', {})
-    max_forward_speed_kmh = float(
-        control_config.get('max_forward_speed', 40.0))
-    self.speed_config = dict(self.phase_config.get('speed_limit', {}))
-    self.speed_config.setdefault(
-        'max_forward_speed_kmh', max_forward_speed_kmh)
-    self.camera_enabled = bool(observation_config.get('use_camera', True))
+    self.reward_weights = self.phase_config['reward_weights']
+    control_config = self.config['control']
+    observation_config = self.config['observation']
+    environment_config = self.config['environment']
+    max_forward_speed_kmh = float(control_config['max_forward_speed'])
+    self.speed_config = dict(self.phase_config['speed_limit'])
+    self.speed_config['max_forward_speed_kmh'] = max_forward_speed_kmh
+    self.red_light_stop_reward_config = dict(
+        self.phase_config['red_light_stop_reward'])
+    self.camera_enabled = bool(observation_config['use_camera'])
     self.camera_warmup_ticks = int(
         max(0, observation_config.get('camera_warmup_ticks', 3)))
     self.route_sampling_resolution = float(
-        environment_config.get('route_sampling_resolution', 4.0))
+        environment_config['route_sampling_resolution'])
     self.route_progress_reached_distance_meters = float(
-        environment_config.get('route_progress_reached_distance_meters', 2.0))
+        environment_config['route_progress_reached_distance_meters'])
     self.destination_success_distance_meters = float(
-        environment_config.get('destination_success_distance_meters', 2.0))
+        environment_config['destination_success_distance_meters'])
     self.traffic_light_lookahead_waypoints = int(
-        environment_config.get('traffic_light_lookahead_waypoints', 30))
-    self.traffic_light_detection_max_distance_meters = float(
-        environment_config.get('traffic_light_detection_max_distance_meters', 200.0))
+        environment_config['traffic_light_lookahead_waypoints'])
+    self.traffic_light_context_range_m = float(
+        environment_config['traffic_light_context_range_m'])
     self.waypoint_distance_timeout_threshold_meters = float(
-        environment_config.get('waypoint_distance_timeout_threshold_meters', 10.0))
+        environment_config['waypoint_distance_timeout_threshold_meters'])
     self.waypoint_distance_timeout_steps = int(
-        environment_config.get('waypoint_distance_timeout_steps', 150))
+        environment_config['waypoint_distance_timeout_steps'])
     self.traffic_light_release_distance_meters = float(
-        environment_config.get('traffic_light_release_distance_meters', 2.0))
+        environment_config['traffic_light_release_distance_meters'])
+    self.traffic_light_switch_hysteresis_m = max(
+        2.0, self.traffic_light_release_distance_meters * 2.0)
     self.traffic_lights_enabled = self._get_initial_traffic_lights_enabled()
 
     # Map randomization frequency based on mode
-    map_config = self.phase_config.get('map_randomization', {})
+    map_config = self.phase_config['map_randomization']
     if self.mode == 'train':
-      self.map_change_frequency = map_config.get(
-          'train_map_randomness_frequency', 1)
+      self.map_change_frequency = map_config['train_map_randomness_frequency']
     elif self.mode == 'test':
-      self.map_change_frequency = map_config.get(
-          'test_map_randomness_frequency', 1)
+      self.map_change_frequency = map_config['test_map_randomness_frequency']
 
     # Episode state
     self.step_count = 0
@@ -85,6 +88,9 @@ class CarlaEnv(gym.Env):
     # Route planning
     self.route_planner = None
     self.route = []
+    self._route_waypoints = []
+    self._route_waypoint_locations = []
+    self._route_progress_targets = []
     self.current_waypoint_idx = 0
     self._tl_index = {}
 
@@ -105,8 +111,8 @@ class CarlaEnv(gym.Env):
     self.collision_sensor = None
     self._original_settings = None
     self._rgb_image = None
-    self._tl_state = 'none'
-    self._tl_distance = 999.0
+    self._tl_state = _NO_TRAFFIC_LIGHT_STATE
+    self._tl_distance = _NO_STOP_DISTANCE_METERS
     self._tracked_traffic_light = None
     self._tracked_stop_waypoint = None
     self._pending_curriculum_changes = {}
@@ -165,13 +171,10 @@ class CarlaEnv(gym.Env):
     if isinstance(choices, list) and len(choices) > 0:
       return choices
 
-    curriculum = self.phase_config.get('curriculum', {})
-    schedule = curriculum.get(dimension, [])
-    if isinstance(schedule, list) and len(schedule) > 0:
+    schedule = self.phase_config['curriculum'][dimension]
+    if len(schedule) > 0:
       first_entry = sorted(schedule, key=lambda x: x['timesteps'])[0]
-      scheduled_choices = first_entry.get('choices', [])
-      if isinstance(scheduled_choices, list) and len(scheduled_choices) > 0:
-        return scheduled_choices
+      return first_entry['choices']
 
     if dimension == 'maps':
       raise ValueError(
@@ -181,11 +184,10 @@ class CarlaEnv(gym.Env):
 
   def _get_initial_traffic_lights_enabled(self):
     """Return whether traffic lights should be active at timestep 0."""
-    schedule = self.phase_config.get(
-        'curriculum', {}).get('traffic_lights', [])
-    if isinstance(schedule, list) and len(schedule) > 0:
+    schedule = self.phase_config['curriculum']['traffic_lights']
+    if len(schedule) > 0:
       first_entry = sorted(schedule, key=lambda x: x['timesteps'])[0]
-      return bool(first_entry.get('enabled', True))
+      return bool(first_entry['enabled'])
     return True
 
   def queue_curriculum_change(self, dimension: str, value):
@@ -205,12 +207,12 @@ class CarlaEnv(gym.Env):
         self.max_steps = int(value)
       elif dimension == 'maps':
         distribution = self.phase_config.setdefault('distribution', {})
-        distribution['maps'] = list(value or [])
+        distribution['maps'] = list(value)
       elif dimension == 'traffic_lights':
         self.set_traffic_lights_enabled(value)
       elif dimension == 'weathers':
         distribution = self.phase_config.setdefault('distribution', {})
-        distribution['weathers'] = list(value or [])
+        distribution['weathers'] = list(value)
 
   def _traffic_lights_active(self):
     """Return whether traffic-light observations and penalties are active."""
@@ -224,8 +226,8 @@ class CarlaEnv(gym.Env):
 
     self.traffic_lights_enabled = enabled
     self._clear_tracked_traffic_light()
-    self._tl_state = 'none'
-    self._tl_distance = 999.0
+    self._tl_state = _NO_TRAFFIC_LIGHT_STATE
+    self._tl_distance = _NO_STOP_DISTANCE_METERS
 
     if not enabled:
       self._tl_index = {}
@@ -243,9 +245,9 @@ class CarlaEnv(gym.Env):
         dtype=np.float32
     )
 
-    obs_config = self.config.get('observation', {})
-    width = obs_config.get('width', 84)
-    height = obs_config.get('height', 84)
+    obs_config = self.config['observation']
+    width = obs_config['width']
+    height = obs_config['height']
 
     obs_dict = {
         "goal": spaces.Box(
@@ -257,11 +259,11 @@ class CarlaEnv(gym.Env):
         "traffic_light": spaces.Box(
             low=0,
             high=1,
-            shape=(4,),
+            shape=(3,),
             dtype=np.float32
         ),
         "distance_to_stop": spaces.Box(
-            low=0,
+            low=-1,
             high=1,
             shape=(1,),
             dtype=np.float32
@@ -309,7 +311,7 @@ class CarlaEnv(gym.Env):
 
   def _get_speed_observation_clip_kmh(self):
     """Return the clip value used for normalized speed observations."""
-    return float(self.speed_config.get('max_forward_speed_kmh', 90.0))
+    return float(self.speed_config['max_forward_speed_kmh'])
 
   def _get_current_speed_kmh(self):
     """Return the vehicle's current speed in km/h."""
@@ -320,9 +322,8 @@ class CarlaEnv(gym.Env):
     return float(np.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2) * 3.6)
 
   def _get_road_speed_limit_kmh(self):
-    """Return the raw road speed limit in km/h with config fallback."""
-    max_forward_speed_kmh = float(
-        self.speed_config.get('max_forward_speed_kmh', 40.0))
+    """Return the raw road speed limit in km/h."""
+    max_forward_speed_kmh = float(self.speed_config['max_forward_speed_kmh'])
 
     if self.vehicle is None:
       return max_forward_speed_kmh
@@ -335,8 +336,7 @@ class CarlaEnv(gym.Env):
 
   def _get_current_speed_limit_kmh(self):
     """Return the effective speed limit in km/h capped by the agent max speed."""
-    max_forward_speed_kmh = float(
-        self.speed_config.get('max_forward_speed_kmh', 40.0))
+    max_forward_speed_kmh = float(self.speed_config['max_forward_speed_kmh'])
     return float(min(self._get_road_speed_limit_kmh(), max_forward_speed_kmh))
 
   def _normalize_speed_observation(self, speed_kmh):
@@ -385,10 +385,10 @@ class CarlaEnv(gym.Env):
 
   def _setup_sensors(self):
     """Attach RGB camera and collision sensor to vehicle."""
-    obs_config = self.config.get('observation', {})
-    width = obs_config.get('width', 84)
-    height = obs_config.get('height', 84)
-    fov = obs_config.get('fov', 90)
+    obs_config = self.config['observation']
+    width = obs_config['width']
+    height = obs_config['height']
+    fov = obs_config['fov']
 
     current_env_instance = weakref.ref(self)
 
@@ -444,8 +444,7 @@ class CarlaEnv(gym.Env):
     for tl in self.world.get_actors().filter('traffic.traffic_light'):
       for stop_wp in tl.get_stop_waypoints():
         key = (stop_wp.road_id, stop_wp.lane_id)
-        if key not in self._tl_index:
-          self._tl_index[key] = (tl, stop_wp)
+        self._tl_index.setdefault(key, []).append((tl, stop_wp))
 
   @staticmethod
   def _on_rgb_image(current_env_instance, image):
@@ -466,16 +465,29 @@ class CarlaEnv(gym.Env):
       return
     self.collision_occurred = True
 
-  def _compute_goal_vector(self):
-    """Computes the goal vector to the next waypoint, returns the forward and lateral distance from the next waypoint."""
-    if len(self.route) == 0 or self.current_waypoint_idx >= len(self.route):
+  @staticmethod
+  def _planar_distance_xy(location_a, location_b) -> float:
+    """Horizontal (XY) distance between two CARLA locations; used consistently for route and goals."""
+    dx = float(location_a.x - location_b.x)
+    dy = float(location_a.y - location_b.y)
+    return float((dx ** 2 + dy ** 2) ** 0.5)
+
+  def _set_active_route(self, route, destination_location):
+    self.route = route
+    self._route_waypoints = [waypoint for waypoint, _ in route]
+    self._route_waypoint_locations = [
+        waypoint.transform.location for waypoint in self._route_waypoints]
+    self._route_progress_targets = [
+        *self._route_waypoint_locations, destination_location]
+
+  def _compute_goal_vector(self, target_waypoint_loc):
+    """Compute goal vector toward current route target (or final destination)."""
+    if target_waypoint_loc is None:
       return np.array([0.0, 0.0], dtype=np.float32)
 
     vehicle_transform = self._step_transform
     vehicle_location = vehicle_transform.location
     vehicle_rotation = vehicle_transform.rotation
-
-    target_waypoint_loc = self.route[self.current_waypoint_idx][0].transform.location
 
     dx = target_waypoint_loc.x - vehicle_location.x
     dy = target_waypoint_loc.y - vehicle_location.y
@@ -497,23 +509,41 @@ class CarlaEnv(gym.Env):
 
     return np.array([forward_norm, lateral_norm], dtype=np.float32)
 
+  def _get_route_progress_target_location(self):
+    """Return current progress target location."""
+    if not self._route_progress_targets:
+      return None
+    target_idx = min(
+        self.current_waypoint_idx, len(self._route_progress_targets) - 1)
+    return self._route_progress_targets[target_idx]
+
   def _advance_route_progress(self, vehicle_location):
     """Advance past all waypoints already within reach using the pre-fetched location."""
-    while (self.current_waypoint_idx < len(self.route) - 1 and
-           vehicle_location.distance(
-           self.route[self.current_waypoint_idx][0].transform.location) < self.route_progress_reached_distance_meters):
+    if not self._route_waypoint_locations:
+      return
+
+    last_route_idx = len(self._route_waypoint_locations) - 1
+    while (self.current_waypoint_idx < last_route_idx and
+           self._planar_distance_xy(
+               vehicle_location,
+               self._route_waypoint_locations[self.current_waypoint_idx],
+           ) < self.route_progress_reached_distance_meters):
       self.current_waypoint_idx += 1
 
-  def _compute_current_waypoint_distance(self, vehicle_location):
-    """Compute 2D distance to the currently tracked route waypoint."""
-    if len(self.route) == 0 or self.current_waypoint_idx >= len(self.route):
+    # After the last route waypoint, keep progress target on destination location.
+    if (self.current_waypoint_idx == last_route_idx and
+            self._planar_distance_xy(
+                vehicle_location,
+                self._route_waypoint_locations[self.current_waypoint_idx],
+            ) < self.route_progress_reached_distance_meters):
+      self.current_waypoint_idx = len(self._route_waypoint_locations)
+
+  def _compute_current_waypoint_distance(self, vehicle_location, target_location):
+    """Compute 2D distance to current progress target."""
+    if target_location is None:
       return 0.0
 
-    current_waypoint_loc = self.route[self.current_waypoint_idx][0].transform.location
-    return float(np.sqrt(
-        (vehicle_location.x - current_waypoint_loc.x)**2 +
-        (vehicle_location.y - current_waypoint_loc.y)**2
-    ))
+    return self._planar_distance_xy(vehicle_location, target_location)
 
   def _update_waypoint_timeout_counter(self, waypoint_distance):
     """Track consecutive steps spent too far from the current tracked waypoint."""
@@ -525,8 +555,8 @@ class CarlaEnv(gym.Env):
   def _compute_lane_metrics(self, vehicle_location):
     """Compute lane deviation and signed lateral error."""
     waypoint = self._get_nearest_route_waypoint(vehicle_location)
-    max_lane_deviation = float(self.config.get(
-        'lane_detection', {}).get('max_lane_deviation', 5.0))
+    max_lane_deviation = float(
+        self.config['lane_detection']['max_lane_deviation'])
 
     if waypoint is None:
       return max_lane_deviation, 0.0
@@ -535,7 +565,7 @@ class CarlaEnv(gym.Env):
     dx = float(vehicle_location.x - wp_location.x)
     dy = float(vehicle_location.y - wp_location.y)
 
-    lane_deviation_2d = float(np.sqrt(dx**2 + dy**2))
+    lane_deviation_2d = self._planar_distance_xy(vehicle_location, wp_location)
     lane_deviation = min(lane_deviation_2d, max_lane_deviation)
 
     right_vector = waypoint.transform.get_right_vector()
@@ -545,60 +575,48 @@ class CarlaEnv(gym.Env):
 
   def _normalize_signed_lane_error_observation(self, lane_error_signed_m):
     """Normalize signed lane error to [-1, 1]."""
-    max_lane_deviation = max(float(self.config.get(
-        'lane_detection', {}).get('max_lane_deviation', 5.0)), 1e-6)
+    max_lane_deviation = max(
+        float(self.config['lane_detection']['max_lane_deviation']), 1e-6)
     return np.array(
         [float(np.clip(lane_error_signed_m / max_lane_deviation, -1.0, 1.0))],
         dtype=np.float32,
     )
 
-  def _get_nearest_route_waypoint_index(self, vehicle_location):
-    """Return the index of the nearest waypoint on the active route."""
-    if len(self.route) == 0:
+  def _get_nearest_route_waypoint(self, vehicle_location):
+    """Return the nearest waypoint anywhere on the active route."""
+    if not self._route_waypoints:
       return None
-
-    nearest_idx = None
+    nearest_idx = 0
     nearest_distance = float('inf')
-    for idx in range(len(self.route)):
-      route_location = self.route[idx][0].transform.location
-      distance = float(np.sqrt(
-          (vehicle_location.x - route_location.x)**2 +
-          (vehicle_location.y - route_location.y)**2
-      ))
+    for idx, route_location in enumerate(self._route_waypoint_locations):
+      distance = self._planar_distance_xy(vehicle_location, route_location)
       if distance < nearest_distance:
         nearest_distance = distance
         nearest_idx = idx
-
-    return nearest_idx
-
-  def _get_nearest_route_waypoint(self, vehicle_location):
-    """Return the nearest waypoint anywhere on the active route."""
-    nearest_idx = self._get_nearest_route_waypoint_index(vehicle_location)
-    if nearest_idx is None:
-      return None
-    return self.route[nearest_idx][0]
+    return self._route_waypoints[nearest_idx]
 
   @staticmethod
   def _encode_traffic_light_state(traffic_light_state: str):
-    """Encode traffic light state as one-hot: [none, red, yellow, green]."""
+    """Encode traffic light state as [none, stop_required, green]."""
     tl_one_hot_map = {
-        'none': np.array([1, 0, 0, 0], dtype=np.float32),
-        'red': np.array([0, 1, 0, 0], dtype=np.float32),
-        'yellow': np.array([0, 0, 1, 0], dtype=np.float32),
-        'green': np.array([0, 0, 0, 1], dtype=np.float32),
+        _NO_TRAFFIC_LIGHT_STATE: np.array([1, 0, 0], dtype=np.float32),
+        'red': np.array([0, 1, 0], dtype=np.float32),
+        'yellow': np.array([0, 1, 0], dtype=np.float32),
+        'green': np.array([0, 0, 1], dtype=np.float32),
     }
-    return tl_one_hot_map.get(traffic_light_state, tl_one_hot_map['none'])
+    return tl_one_hot_map.get(
+        traffic_light_state, tl_one_hot_map[_NO_TRAFFIC_LIGHT_STATE])
 
-  @staticmethod
-  def encode_stop_distance_observation(distance_to_stop: float):
+  def encode_stop_distance_observation(self, distance_to_stop: float):
     """Encode signed stop-line distance into [-1, 1]."""
+    clip_range_m = max(self.traffic_light_context_range_m, 1.0)
     distance_clipped = np.clip(
         distance_to_stop,
-        -_STOP_DISTANCE_CLIP_METERS,
-        _STOP_DISTANCE_CLIP_METERS,
+        -clip_range_m,
+        clip_range_m,
     )
     return np.array(
-        [distance_clipped / _STOP_DISTANCE_CLIP_METERS],
+        [distance_clipped / clip_range_m],
         dtype=np.float32,
     )
 
@@ -622,14 +640,18 @@ class CarlaEnv(gym.Env):
   @staticmethod
   def _map_traffic_light_state(traffic_light):
     if traffic_light is None:
-      return 'none'
+      return _NO_TRAFFIC_LIGHT_STATE
 
     state_map = {
         carla.TrafficLightState.Red: 'red',
         carla.TrafficLightState.Yellow: 'yellow',
         carla.TrafficLightState.Green: 'green',
     }
-    return state_map.get(traffic_light.get_state(), 'none')
+    return state_map.get(traffic_light.get_state(), _NO_TRAFFIC_LIGHT_STATE)
+
+  @staticmethod
+  def _no_traffic_light_result():
+    return _NO_TRAFFIC_LIGHT_STATE, _NO_STOP_DISTANCE_METERS
 
   def _clear_tracked_traffic_light(self):
     self._tracked_traffic_light = None
@@ -639,7 +661,7 @@ class CarlaEnv(gym.Env):
                                     vehicle_location):
     if traffic_light is None or stop_waypoint is None:
       self._clear_tracked_traffic_light()
-      return 'none', 999.0
+      return self._no_traffic_light_result()
 
     distance_to_stop = self._compute_signed_distance_to_stop(
         vehicle_location, stop_waypoint)
@@ -648,45 +670,120 @@ class CarlaEnv(gym.Env):
     self._tracked_stop_waypoint = stop_waypoint
     return state, distance_to_stop
 
-  def _should_release_tracked_traffic_light(self, vehicle_location):
-    if self._tracked_stop_waypoint is None:
-      return True
-    distance_to_stop = self._compute_signed_distance_to_stop(
-        vehicle_location, self._tracked_stop_waypoint)
-    return distance_to_stop > self.traffic_light_release_distance_meters
+  def _resolve_stop_waypoint_for_vehicle_lane(self, stop_waypoints,
+                                              vehicle_location):
+    if not stop_waypoints:
+      return None
+
+    stop_waypoint = stop_waypoints[0]
+    vehicle_waypoint = self.carla_map.get_waypoint(vehicle_location)
+    if vehicle_waypoint is None:
+      return stop_waypoint
+
+    for candidate in stop_waypoints:
+      if (candidate.road_id == vehicle_waypoint.road_id and
+              candidate.lane_id == vehicle_waypoint.lane_id):
+        return candidate
+    return stop_waypoint
+
+  def _detect_traffic_light_from_vehicle_sensor(self, vehicle_location):
+    if not self.vehicle.is_at_traffic_light():
+      return None
+
+    traffic_light = self.vehicle.get_traffic_light()
+    stop_waypoints = traffic_light.get_stop_waypoints()
+    stop_waypoint = self._resolve_stop_waypoint_for_vehicle_lane(
+        stop_waypoints, vehicle_location)
+    return self._update_tracked_traffic_light(
+        traffic_light, stop_waypoint, vehicle_location)
+
+  def _maintain_or_release_tracked_traffic_light(self, vehicle_location):
+    tracked_tl = self._tracked_traffic_light
+    tracked_stop_wp = self._tracked_stop_waypoint
+    if tracked_tl is None or tracked_stop_wp is None:
+      return None, None
+
+    tracked_stop_dist = self._compute_signed_distance_to_stop(
+        vehicle_location, tracked_stop_wp)
+    tracked_planar_dist = self._planar_distance_xy(
+        vehicle_location, tracked_stop_wp.transform.location)
+
+    # Keep current tracked light through a small post-stop-line buffer.
+    if 0.0 <= tracked_stop_dist <= self.traffic_light_release_distance_meters:
+      tracked_result = self._update_tracked_traffic_light(
+          tracked_tl, tracked_stop_wp, vehicle_location)
+      return tracked_result, tracked_planar_dist
+
+    # Release once clearly passed or no longer in meaningful context.
+    if (tracked_stop_dist > self.traffic_light_release_distance_meters or
+            tracked_planar_dist > self.traffic_light_context_range_m):
+      self._clear_tracked_traffic_light()
+      return None, None
+
+    return None, tracked_planar_dist
 
   def _find_relevant_route_traffic_light(self, vehicle_location, vehicle_forward):
     """Return the nearest route traffic light within approach range."""
-    if len(self.route) == 0 or not self._tl_index:
-      return None, None
+    # No route search if the route or traffic-light index is empty.
+    if not self._route_waypoints or not self._tl_index:
+      return None, None, None
 
-    closest_dist = 999.0
-    closest_tl = None
-    closest_stop_waypoint = None
+    best_score = None
+    best_tl = None
+    best_stop_waypoint = None
+    best_dist = None
+    seen_candidates = set()
+    # Only inspect a bounded number of waypoints ahead of the current progress point.
     lookahead_limit = min(
         self.current_waypoint_idx + self.traffic_light_lookahead_waypoints,
-        len(self.route)
+        len(self._route_waypoints)
     )
 
     for idx in range(self.current_waypoint_idx, lookahead_limit):
-      route_waypoint, _ = self.route[idx]
-      entry = self._tl_index.get(
+      route_waypoint = self._route_waypoints[idx]
+      # Only consider lights attached to the same road/lane as the route waypoint.
+      entries = self._tl_index.get(
           (route_waypoint.road_id, route_waypoint.lane_id))
-      if entry is None:
+      if not entries:
         continue
 
-      traffic_light, stop_waypoint = entry
-      stop_location = stop_waypoint.transform.location
-      dx = stop_location.x - vehicle_location.x
-      dy = stop_location.y - vehicle_location.y
-      ahead = dx * vehicle_forward.x + dy * vehicle_forward.y
-      dist = float((dx ** 2 + dy ** 2) ** 0.5)
-      if ahead > 0.0 and dist < closest_dist and dist < self.traffic_light_detection_max_distance_meters:
-        closest_dist = dist
-        closest_tl = traffic_light
-        closest_stop_waypoint = stop_waypoint
+      for traffic_light, stop_waypoint in entries:
+        # Deduplicate repeated stop-waypoint entries for the same light.
+        candidate_key = (
+            int(traffic_light.id),
+            int(stop_waypoint.road_id),
+            int(stop_waypoint.lane_id),
+            int(round(stop_waypoint.transform.location.x * 10.0)),
+            int(round(stop_waypoint.transform.location.y * 10.0)),
+        )
+        if candidate_key in seen_candidates:
+          continue
+        seen_candidates.add(candidate_key)
 
-    return closest_tl, closest_stop_waypoint
+        # Ignore lights that are behind the vehicle.
+        stop_location = stop_waypoint.transform.location
+        dx = stop_location.x - vehicle_location.x
+        dy = stop_location.y - vehicle_location.y
+        ahead = dx * vehicle_forward.x + dy * vehicle_forward.y
+        if ahead <= 0.0:
+          continue
+
+        # Ignore lights outside the route-context radius.
+        dist = self._planar_distance_xy(
+            vehicle_location, stop_waypoint.transform.location)
+        if dist > self.traffic_light_context_range_m:
+          continue
+
+        # Prefer the nearest waypoint on the route, then the nearest stop line.
+        route_delta = idx - self.current_waypoint_idx
+        score = (route_delta, dist)
+        if best_score is None or score < best_score:
+          best_score = score
+          best_tl = traffic_light
+          best_stop_waypoint = stop_waypoint
+          best_dist = dist
+
+    return best_tl, best_stop_waypoint, best_dist
 
   def _detect_traffic_light(self, vehicle_location):
     """Detect the nearest route traffic light and signed stop distance.
@@ -694,52 +791,73 @@ class CarlaEnv(gym.Env):
     Returns:
       (traffic_light_state, distance_to_stop): tuple of (str, float)
     """
+    # No traffic-light logic if the feature is disabled or the vehicle does not exist yet.
     if not self._traffic_lights_active() or self.vehicle is None:
       self._clear_tracked_traffic_light()
-      return 'none', 999.0
+      return self._no_traffic_light_result()
 
     vehicle_forward = self._step_transform.get_forward_vector()
 
-    if self.vehicle.is_at_traffic_light():
-      traffic_light = self.vehicle.get_traffic_light()
-      stop_waypoints = traffic_light.get_stop_waypoints()
-      stop_waypoint = stop_waypoints[0] if stop_waypoints else None
-      if stop_waypoints:
-        vehicle_waypoint = self.carla_map.get_waypoint(vehicle_location)
-        if vehicle_waypoint is not None:
-          for candidate in stop_waypoints:
-            if candidate.road_id == vehicle_waypoint.road_id and candidate.lane_id == vehicle_waypoint.lane_id:
-              stop_waypoint = candidate
-              break
+    # Use direct vehicle sensor if currently at a traffic light.
+    vehicle_sensor_result = self._detect_traffic_light_from_vehicle_sensor(
+        vehicle_location)
+    if vehicle_sensor_result is not None:
+      return vehicle_sensor_result
 
-      return self._update_tracked_traffic_light(
-          traffic_light, stop_waypoint, vehicle_location)
+    # Otherwise keep or release whatever light was already being tracked.
+    tracked_result, tracked_planar_dist = self._maintain_or_release_tracked_traffic_light(
+        vehicle_location)
+    if tracked_result is not None:
+      return tracked_result
 
-    if self._tracked_traffic_light is not None:
-      if self._should_release_tracked_traffic_light(vehicle_location):
-        self._clear_tracked_traffic_light()
-      else:
-        return self._update_tracked_traffic_light(
-            self._tracked_traffic_light, self._tracked_stop_waypoint, vehicle_location)
-
-    tl, stop_wp = self._find_relevant_route_traffic_light(
+    # Search the route ahead for the next traffic light candidate.
+    tl, stop_wp, candidate_planar_dist = self._find_relevant_route_traffic_light(
         vehicle_location, vehicle_forward)
-    if tl is None:
-      return 'none', 999.0
-    return self._update_tracked_traffic_light(tl, stop_wp, vehicle_location)
 
-  def _get_observation(self):
+    # If no candidate is found, keep the current tracked light if one still exists.
+    if tl is None:
+      if self._tracked_traffic_light is None:
+        return self._no_traffic_light_result()
+      return self._update_tracked_traffic_light(
+          self._tracked_traffic_light, self._tracked_stop_waypoint, vehicle_location)
+
+    # Update to track the new candidate if there is no currently tracked light
+    if self._tracked_traffic_light is None:
+      return self._update_tracked_traffic_light(tl, stop_wp, vehicle_location)
+
+    # If the candidate is the same physical light, just refresh the tracked state.
+    if (tl.id == self._tracked_traffic_light.id and
+            stop_wp.road_id == self._tracked_stop_waypoint.road_id and
+            stop_wp.lane_id == self._tracked_stop_waypoint.lane_id):
+      return self._update_tracked_traffic_light(
+          self._tracked_traffic_light, self._tracked_stop_waypoint, vehicle_location)
+
+    if tracked_planar_dist is None:
+      return self._update_tracked_traffic_light(tl, stop_wp, vehicle_location)
+
+    # Only switch when the new light is clearly closer than the current one by a margin.
+    if (candidate_planar_dist is not None and
+            candidate_planar_dist + self.traffic_light_switch_hysteresis_m <
+            tracked_planar_dist):
+      return self._update_tracked_traffic_light(tl, stop_wp, vehicle_location)
+
+    # Otherwise keep following the current light to avoid flickering between candidates.
+    return self._update_tracked_traffic_light(
+        self._tracked_traffic_light, self._tracked_stop_waypoint, vehicle_location)
+
+  def _get_traffic_light_context(self):
+    if not self._traffic_lights_active():
+      return self._no_traffic_light_result()
+    return self._tl_state, self._tl_distance
+
+  def _get_observation(self, target_location):
     """Return Dict observation with route context and target speed; image only when camera enabled."""
-    goal = self._compute_goal_vector()
+    goal = self._compute_goal_vector(target_location)
     current_speed_kmh = self._get_current_speed_kmh()
     speed_limit_kmh = self._get_current_speed_limit_kmh()
     _, lane_error_signed = self._step_lane_metrics
 
-    traffic_light_state = 'none'
-    distance_to_stop = 999.0
-    if self._traffic_lights_active():
-      traffic_light_state = self._tl_state
-      distance_to_stop = self._tl_distance
+    traffic_light_state, distance_to_stop = self._get_traffic_light_context()
 
     reward_target_speed_kmh = self._get_reward_target_speed_kmh(
         traffic_light_state, distance_to_stop, speed_limit_kmh)
@@ -779,7 +897,7 @@ class CarlaEnv(gym.Env):
 
     return obs
 
-  def _get_vehicle_state(self):
+  def _get_vehicle_state(self, target_location):
     """Get current vehicle state for reward calculation and info."""
     vehicle_transform = self._step_transform
     vehicle_location = vehicle_transform.location
@@ -788,23 +906,21 @@ class CarlaEnv(gym.Env):
     effective_speed_limit_kmh = self._get_current_speed_limit_kmh()
 
     destination = self.spawn_points[self.dest_idx].location
-    distance_to_dest = np.sqrt(
-        (vehicle_location.x - destination.x)**2 +
-        (vehicle_location.y - destination.y)**2
-    )
+    distance_to_dest = self._planar_distance_xy(vehicle_location, destination)
 
     waypoint_distance = self._compute_current_waypoint_distance(
-        vehicle_location)
+        vehicle_location, target_location)
     lane_deviation, lane_error_signed = self._step_lane_metrics
 
-    traffic_light_state = 'none'
-    distance_to_stop = 999.0
-    if self._traffic_lights_active():
-      traffic_light_state = self._tl_state
-      distance_to_stop = self._tl_distance
+    traffic_light_state, distance_to_stop = self._get_traffic_light_context()
 
-    cruise_target_speed_kmh = float(compute_cruise_speed_target(
-        effective_speed_limit_kmh, self.speed_config))
+    cruise_target_speed_kmh = float(compute_target_speed(
+        _NO_TRAFFIC_LIGHT_STATE,
+        0.0,
+        effective_speed_limit_kmh,
+        self.speed_config,
+        traffic_lights_enabled=False,
+    ))
     reward_target_speed_kmh = self._get_reward_target_speed_kmh(
         traffic_light_state, distance_to_stop, effective_speed_limit_kmh)
     traffic_light_violation = (
@@ -830,6 +946,9 @@ class CarlaEnv(gym.Env):
         'waypoint_timeout_steps': self._waypoint_timeout_steps,
         'traffic_light_state': traffic_light_state,
         'distance_to_stop': distance_to_stop,
+        'tracked_traffic_light_id': (
+            int(self._tracked_traffic_light.id)
+            if self._tracked_traffic_light is not None else -1),
         'traffic_light_violation': traffic_light_violation,
         'traffic_lights_enabled': self._traffic_lights_active(),
         'speed_error_kmh': float(speed - reward_target_speed_kmh),
@@ -858,9 +977,14 @@ class CarlaEnv(gym.Env):
     self.last_action = None
     self._step_transform = None
     self._step_lane_metrics = None
+    self.route = []
+    self._route_waypoints = []
+    self._route_waypoint_locations = []
+    self._route_progress_targets = []
+    self.current_waypoint_idx = 0
     self._tl_index = {}
-    self._tl_state = 'none'
-    self._tl_distance = 999.0
+    self._tl_state = _NO_TRAFFIC_LIGHT_STATE
+    self._tl_distance = _NO_STOP_DISTANCE_METERS
     self._clear_tracked_traffic_light()
     self._waypoint_timeout_steps = 0
     self._last_control = {
@@ -916,6 +1040,12 @@ class CarlaEnv(gym.Env):
       self.dest_idx = self.np_random.integers(0, num_spawn_points)
 
     self._spawn_vehicle()
+    # Spawn retry may have changed spawn_idx; re-enforce spawn != destination
+    if self.spawn_idx == self.dest_idx:
+      self.dest_idx = self.np_random.integers(0, num_spawn_points)
+      while self.dest_idx == self.spawn_idx:
+        self.dest_idx = self.np_random.integers(0, num_spawn_points)
+
     self._setup_sensors()
 
     # Reset episode state
@@ -926,15 +1056,20 @@ class CarlaEnv(gym.Env):
     # Calculate initial distance to destination
     spawn_loc = self.spawn_points[self.spawn_idx].location
     dest_loc = self.spawn_points[self.dest_idx].location
-    self.initial_distance = spawn_loc.distance(dest_loc)
+    self.initial_distance = self._planar_distance_xy(spawn_loc, dest_loc)
 
     # Compute route from spawn to destination
-    self.route = self.route_planner.trace_route(spawn_loc, dest_loc)
+    route = self.route_planner.trace_route(spawn_loc, dest_loc)
+    if not route:
+      raise RuntimeError(
+          f"Route planner returned empty route from spawn {self.spawn_idx} to dest {self.dest_idx} "
+          f"on map '{self.current_map}'. Cannot start episode.")
+    self._set_active_route(route, dest_loc)
 
     # Start at the first waypoint beyond the advance threshold so WP 0 is never silently consumed
     self.current_waypoint_idx = 0
-    for idx, (wp, _) in enumerate(self.route):
-      if spawn_loc.distance(wp.transform.location) > self.route_progress_reached_distance_meters:
+    for idx, waypoint_location in enumerate(self._route_waypoint_locations):
+      if self._planar_distance_xy(spawn_loc, waypoint_location) > self.route_progress_reached_distance_meters:
         self.current_waypoint_idx = idx
         break
 
@@ -949,9 +1084,10 @@ class CarlaEnv(gym.Env):
     self._tl_state, self._tl_distance = self._detect_traffic_light(
         vehicle_location)
     self._step_lane_metrics = self._compute_lane_metrics(vehicle_location)
+    target_location = self._get_route_progress_target_location()
 
-    observation = self._get_observation()
-    info = self._get_vehicle_state()
+    observation = self._get_observation(target_location)
+    info = self._get_vehicle_state(target_location)
     info['initial_distance'] = self.initial_distance
     info['map'] = self.current_map
     info['weather'] = self.current_weather
@@ -995,41 +1131,66 @@ class CarlaEnv(gym.Env):
     self._tl_state, self._tl_distance = self._detect_traffic_light(
         vehicle_location)
     self._step_lane_metrics = self._compute_lane_metrics(vehicle_location)
+    target_location = self._get_route_progress_target_location()
     waypoint_distance = self._compute_current_waypoint_distance(
-        vehicle_location)
+        vehicle_location, target_location)
     self._update_waypoint_timeout_counter(waypoint_distance)
 
     self.last_action = action.copy()
 
-    observation = self._get_observation()
-    state = self._get_vehicle_state()
+    observation = self._get_observation(target_location)
+    state = self._get_vehicle_state(target_location)
+    destination_reached = (
+        state['distance_to_destination'] < self.destination_success_distance_meters
+    )
+    red_violation_now = bool(state.get('traffic_light_violation', False))
+    collision_now = bool(self.collision_occurred)
+
+    prev_collision = bool(self.prev_state.get(
+        'collision', False)) if self.prev_state is not None else False
+    prev_red_violation = bool(self.prev_state.get(
+        'traffic_light_violation', False)) if self.prev_state is not None else False
+    prev_destination_reached = (
+        bool(self.prev_state['distance_to_destination']
+             < self.destination_success_distance_meters)
+        if self.prev_state is not None and 'distance_to_destination' in self.prev_state
+        else False
+    )
+
+    # One-time event flags for terminal reward components.
+    state['just_collided'] = bool(collision_now and not prev_collision)
+    state['just_red_light_violation'] = bool(
+        red_violation_now and not prev_red_violation)
+    state['just_reached_destination'] = bool(
+        destination_reached and not prev_destination_reached)
 
     # Reward calculation with previous state for progress/smoothness
     reward = 0.0
     reward_components = None
     if self.reward_fn is not None:
-      # Pass action and prev_action separately; state is physical state only
+      # Pass action and prev_action separately; state also includes one-time event flags.
       if self.reward_fn is compute_reward:
         reward, reward_components = compute_reward_with_components(
             state, action, self.prev_state, prev_action_for_reward,
-            self.reward_weights, self.speed_config)
+            self.reward_weights, self.speed_config,
+            self.red_light_stop_reward_config)
       else:
         reward = self.reward_fn(state, action, self.prev_state, prev_action_for_reward,
-                                self.reward_weights, self.speed_config)
+                                self.reward_weights, self.speed_config,
+                                self.red_light_stop_reward_config)
 
     # Store current state/action for next step
     self.prev_state = state.copy()
 
-    # Termination: collision or reached destination
-    terminated = self.collision_occurred
-    if state['distance_to_destination'] < self.destination_success_distance_meters:
-      terminated = True
-
-    if state['traffic_light_violation']:
-      terminated = True
-
-    if self._waypoint_timeout_steps >= self.waypoint_distance_timeout_steps:
-      terminated = True
+    waypoint_timeout_terminated = (
+        self._waypoint_timeout_steps >= self.waypoint_distance_timeout_steps
+    )
+    terminated = bool(
+        collision_now or
+        destination_reached or
+        red_violation_now or
+        waypoint_timeout_terminated
+    )
 
     # Episode timeout: max steps reached
     episode_timeout = self.step_count >= self.max_steps
