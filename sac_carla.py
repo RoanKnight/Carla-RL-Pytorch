@@ -22,14 +22,12 @@ def _validate_agent_variant(agent_variant: str) -> str:
     raise ValueError(f"Unsupported agent variant '{agent_variant}'.")
   return variant
 
-def get_agent_type(agent_choice: str = 'auto',
-                   config_path: str = 'config/base.yaml') -> str:
+def get_agent_type(agent_choice: str = 'auto', config_path: str = 'config/base.yaml') -> str:
   """Resolve agent type from explicit choice or base camera setting."""
   choice = str(agent_choice).strip().lower()
   if choice not in _SUPPORTED_AGENT_CHOICES:
     raise ValueError(
-        f"Invalid agent choice '{agent_choice}'. Expected one of: {sorted(_SUPPORTED_AGENT_CHOICES)}"
-    )
+      f"Invalid agent choice '{agent_choice}'. Expected one of: {sorted(_SUPPORTED_AGENT_CHOICES)}")
   if choice == "auto":
     base_config = load_config(config_path)
     use_camera = bool(base_config['observation']['use_camera'])
@@ -51,12 +49,10 @@ def create_env(phase_config_path: str = 'config/training.yaml',
   active_variant = _validate_agent_variant(agent_variant)
 
   def _make_env():
-    base = CarlaEnv(
-        config_path='config/base.yaml',
-        phase_config_path=phase_config_path,
-        reward_fn=compute_reward,
-        mode=mode
-    )
+    base = CarlaEnv(config_path='config/base.yaml',
+                    phase_config_path=phase_config_path,
+                    reward_fn=compute_reward,
+                    mode=mode)
     return Monitor(base)
 
   if not vectorize:
@@ -91,32 +87,32 @@ def create_agent(env, config: dict, agent_variant: str) -> SAC:
     drq_num_views = int(drq_config['num_views'])
     policy_kwargs['features_extractor_class'] = DrQDictFeaturesExtractor
     policy_kwargs['features_extractor_kwargs'] = {
-        'cnn_output_dim': 256,
-        'normalized_image': False,
+      'cnn_output_dim': 256,
+      'normalized_image': False,
     }
 
   sac_kwargs = dict(
-      policy="MultiInputPolicy",
-      env=env,
-      learning_rate=config['sac']['learning_rate'],
-      buffer_size=config['sac']['buffer_size'],
-      batch_size=config['sac']['batch_size'],
-      gamma=config['sac']['gamma'],
-      tau=config['sac']['tau'],
-      ent_coef=config['sac']['ent_coef'],
-      train_freq=config['sac']['train_freq'],
-      gradient_steps=config['sac']['gradient_steps'],
-      learning_starts=config['sac']['learning_starts'],
-      policy_kwargs=policy_kwargs if policy_kwargs else None,
-      verbose=0,
+    policy="MultiInputPolicy",
+    env=env,
+    learning_rate=config['sac']['learning_rate'],
+    buffer_size=config['sac']['buffer_size'],
+    batch_size=config['sac']['batch_size'],
+    gamma=config['sac']['gamma'],
+    tau=config['sac']['tau'],
+    ent_coef=config['sac']['ent_coef'],
+    train_freq=config['sac']['train_freq'],
+    gradient_steps=config['sac']['gradient_steps'],
+    learning_starts=config['sac']['learning_starts'],
+    policy_kwargs=policy_kwargs if policy_kwargs else None,
+    verbose=0,
   )
 
   if active_variant == AGENT_VARIANT_CAMERA:
     return DrQSAC(
-        replay_buffer_class=DrQDictReplayBuffer,
-        drq_pad=drq_pad,
-        drq_num_views=drq_num_views,
-        **sac_kwargs,
+      replay_buffer_class=DrQDictReplayBuffer,
+      drq_pad=drq_pad,
+      drq_num_views=drq_num_views,
+      **sac_kwargs,
     )
 
   return SAC(**sac_kwargs)
@@ -127,9 +123,9 @@ def get_callbacks(config: dict, checkpoint_dir: str | None = None) -> list:
   Path(active_checkpoint_dir).mkdir(parents=True, exist_ok=True)
 
   checkpoint_cb = CheckpointCallback(
-      save_freq=config['training']['eval_freq'],
-      save_path=active_checkpoint_dir,
-      name_prefix="sac_carla",
+    save_freq=config['training']['eval_freq'],
+    save_path=active_checkpoint_dir,
+    name_prefix="sac_carla",
   )
 
   log_cb = EpisodeLogger(log_interval=config['training']['log_interval'])
@@ -139,7 +135,8 @@ def get_callbacks(config: dict, checkpoint_dir: str | None = None) -> list:
 
   return callbacks
 
-def load_agent(model_path: str, env: CarlaEnv = None,
+def load_agent(model_path: str,
+               env: CarlaEnv = None,
                agent_variant: str = AGENT_VARIANT_NO_CAMERA) -> SAC:
   """Load trained SAC agent from checkpoint."""
   active_variant = _validate_agent_variant(agent_variant)
@@ -161,9 +158,7 @@ def _curriculum_value_from_entry(dimension: str, entry: dict):
     return list(entry['choices'])
   return None
 
-def _resolve_curriculum_value_for_timestep(schedule: list,
-                                           timestep: int,
-                                           dimension: str):
+def _resolve_curriculum_value_for_timestep(schedule: list, timestep: int, dimension: str):
   active_entry = schedule[0]
   for entry in schedule:
     if timestep >= entry['timesteps']:
@@ -192,8 +187,7 @@ def apply_curriculum_for_timestep(base_env, config: dict, timestep: int) -> None
       continue
 
     schedule_sorted = _sort_curriculum_schedule(schedule)
-    value = _resolve_curriculum_value_for_timestep(
-        schedule_sorted, timestep, dimension)
+    value = _resolve_curriculum_value_for_timestep(schedule_sorted, timestep, dimension)
     _apply_curriculum_dimension(base_env, dimension, value)
 
 class EpisodeLogger(BaseCallback):
@@ -212,16 +206,13 @@ class EpisodeLogger(BaseCallback):
     if not isinstance(step_components, dict):
       return
     for name, value in step_components.items():
-      self.current_episode_components[name] = (
-          self.current_episode_components.get(name, 0.0) + float(value))
+      self.current_episode_components[name] = (self.current_episode_components.get(name, 0.0) +
+                                               float(value))
 
   def _format_episode_components(self) -> str:
     """Return top signed reward contributors for the current episode."""
-    non_zero = [
-        (name, value)
-        for name, value in self.current_episode_components.items()
-        if abs(value) >= 0.01
-    ]
+    non_zero = [(name, value) for name, value in self.current_episode_components.items()
+                if abs(value) >= 0.01]
     if not non_zero:
       return "components: none"
     top = sorted(non_zero, key=lambda item: abs(item[1]), reverse=True)[:5]
@@ -244,11 +235,10 @@ class EpisodeLogger(BaseCallback):
       if self.episode_count % self.log_interval == 0:
         component_summary = self._format_episode_components()
         print(
-            f"Episode {self.episode_count:4d} | "
-            f"Reward {self.current_episode_reward:8.2f} | "
-            f"Steps {self.current_episode_steps:4d} | {component_summary}",
-            flush=True
-        )
+          f"Episode {self.episode_count:4d} | "
+          f"Reward {self.current_episode_reward:8.2f} | "
+          f"Steps {self.current_episode_steps:4d} | {component_summary}",
+          flush=True)
       self.current_episode_reward = 0.0
       self.current_episode_steps = 0
       self.current_episode_components = {}
@@ -268,8 +258,7 @@ class CurriculumManager(BaseCallback):
       if isinstance(schedule, list) and len(schedule) > 0:
         schedule_sorted = _sort_curriculum_schedule(schedule)
         self.curriculum[dimension] = schedule_sorted
-        self.current_values[dimension] = _curriculum_value_from_entry(
-            dimension, schedule_sorted[0])
+        self.current_values[dimension] = _curriculum_value_from_entry(dimension, schedule_sorted[0])
 
   @staticmethod
   def _get_base_env(training_env):
@@ -293,8 +282,7 @@ class CurriculumManager(BaseCallback):
     base_env = self._get_base_env(self.training_env)
 
     for dimension, schedule in self.curriculum.items():
-      new_value = _resolve_curriculum_value_for_timestep(
-          schedule, timesteps, dimension)
+      new_value = _resolve_curriculum_value_for_timestep(schedule, timesteps, dimension)
       if new_value != self.current_values[dimension]:
         # Queue the change when possible so it is applied cleanly at the next reset.
         if hasattr(base_env, 'queue_curriculum_change'):
@@ -304,8 +292,8 @@ class CurriculumManager(BaseCallback):
         self.current_values[dimension] = new_value
         if self.verbose >= 1:
           print(
-              f"\n[Curriculum] Timestep {timesteps}: {dimension} -> {new_value} (applied next reset)\n",
-              flush=True,
+            f"\n[Curriculum] Timestep {timesteps}: {dimension} -> {new_value} (applied next reset)\n",
+            flush=True,
           )
 
     return True

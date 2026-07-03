@@ -14,7 +14,7 @@ map_randomization:
 # SAC hyperparameters
 sac:
   learning_rate: 0.0002
-  buffer_size: 1000000
+  buffer_size: 100000
   batch_size: 256
   gamma: 0.99
   tau: 0.001
@@ -45,18 +45,10 @@ curriculum:
   maps:
     - timesteps: 0
       choices: [Town01_Opt, Town02_Opt, Town07_Opt]
-    - timesteps: 1000000
-      choices: [Town01_Opt, Town02_Opt, Town03_Opt, Town05_Opt, Town07_Opt]
-    - timesteps: 2500000
-      choices:
-        [
-          Town01_Opt,
-          Town02_Opt,
-          Town03_Opt,
-          Town05_Opt,
-          Town07_Opt,
-          Town10HD_Opt,
-        ]
+    # - timesteps: 1000000
+    #   choices: [Town01_Opt, Town02_Opt, Town03_Opt, Town05_Opt, Town07_Opt]
+    # - timesteps: 2500000
+    #   choices: [Town01_Opt, Town02_Opt, Town03_Opt, Town05_Opt, Town07_Opt, Town10HD_Opt]
   weathers:
     - timesteps: 0
       choices: [clear_noon, clear_sunset]
@@ -101,7 +93,7 @@ reward_weights:
   success: 100.0
   traffic_light_violation: 50.0
 
-# Positive reward for properly stopping/holding at red or yellow lights
+# Reward for holding at red lights
 red_light_stop_reward:
   stop_distance_range:
     min_m: -2.0

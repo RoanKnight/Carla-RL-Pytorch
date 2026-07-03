@@ -17,35 +17,38 @@ class RandomShiftAug(nn.Module):
       return image_batch
     if image_batch.dim() != 4:
       raise ValueError(
-          f"Expected 4D tensor (batch, channels, height, width) for random shift, got shape {tuple(image_batch.shape)}"
+        f"Expected 4D tensor (batch, channels, height, width) for random shift, got shape {tuple(image_batch.shape)}"
       )
 
     batch_size, num_channels, img_height, img_width = image_batch.shape
 
     # Pad image borders by replicating edge pixels to avoid artifacts at boundaries
-    padded_image = F.pad(image_batch, (self.pad, self.pad,
-                         self.pad, self.pad), mode='replicate')
+    padded_image = F.pad(image_batch, (self.pad, self.pad, self.pad, self.pad), mode='replicate')
 
     # Generate random crop offset to shift the image by a random amount between -pad and +pad
     num_possible_shifts = 2 * self.pad + 1
-    col_shift = torch.randint(0, num_possible_shifts, (batch_size,),
-                              device=image_batch.device, dtype=torch.long)
-    row_shift = torch.randint(0, num_possible_shifts, (batch_size,),
-                              device=image_batch.device, dtype=torch.long)
+    col_shift = torch.randint(0,
+                              num_possible_shifts, (batch_size, ),
+                              device=image_batch.device,
+                              dtype=torch.long)
+    row_shift = torch.randint(0,
+                              num_possible_shifts, (batch_size, ),
+                              device=image_batch.device,
+                              dtype=torch.long)
 
     padded_width = img_width + 2 * self.pad
 
     # Row gather must keep full padded width so column gather still has valid range to index
-    row_indices = torch.arange(
-        img_height, device=image_batch.device, dtype=torch.long).view(1, 1, img_height, 1)
-    row_indices = row_indices.expand(
-        batch_size, num_channels, img_height, padded_width) + row_shift.view(batch_size, 1, 1, 1)
+    row_indices = torch.arange(img_height, device=image_batch.device,
+                               dtype=torch.long).view(1, 1, img_height, 1)
+    row_indices = row_indices.expand(batch_size, num_channels, img_height,
+                                     padded_width) + row_shift.view(batch_size, 1, 1, 1)
 
     # Column gather reduces padded width back to original width using the random col offset
-    col_indices = torch.arange(
-        img_width, device=image_batch.device, dtype=torch.long).view(1, 1, 1, img_width)
-    col_indices = col_indices.expand(
-        batch_size, num_channels, img_height, img_width) + col_shift.view(batch_size, 1, 1, 1)
+    col_indices = torch.arange(img_width, device=image_batch.device,
+                               dtype=torch.long).view(1, 1, 1, img_width)
+    col_indices = col_indices.expand(batch_size, num_channels, img_height,
+                                     img_width) + col_shift.view(batch_size, 1, 1, 1)
 
     # Gather rows first (output: B,C,H,padded_W), then columns (output: B,C,H,W)
     shifted_image = torch.gather(padded_image, dim=2, index=row_indices)
@@ -56,21 +59,20 @@ class DrQDictFeaturesExtractor(BaseFeaturesExtractor):
   """Custom extractor for DrQ that encodes image observations with a CNN and flattens other inputs."""
 
   def __init__(
-      self,
-      observation_space: spaces.Dict,
-      cnn_output_dim: int = 256,
-      normalized_image: bool = False,
+    self,
+    observation_space: spaces.Dict,
+    cnn_output_dim: int = 256,
+    normalized_image: bool = False,
   ):
     super().__init__(observation_space, features_dim=1)
 
     if not isinstance(observation_space, spaces.Dict):
-      raise TypeError(
-          "DrQDictFeaturesExtractor expects a Dict observation space")
+      raise TypeError("DrQDictFeaturesExtractor expects a Dict observation space")
 
     self.image_key = "image"
     if self.image_key not in observation_space.spaces:
       raise KeyError(
-          f"Expected '{self.image_key}' in observation space keys {list(observation_space.spaces.keys())}"
+        f"Expected '{self.image_key}' in observation space keys {list(observation_space.spaces.keys())}"
       )
 
     self.extractors = nn.ModuleDict()
@@ -81,9 +83,9 @@ class DrQDictFeaturesExtractor(BaseFeaturesExtractor):
       if obs_key == self.image_key:
         # Image gets CNN encoder to produce learned features
         self.extractors[obs_key] = NatureCNN(
-            obs_subspace,
-            features_dim=cnn_output_dim,
-            normalized_image=normalized_image,
+          obs_subspace,
+          features_dim=cnn_output_dim,
+          normalized_image=normalized_image,
         )
         total_feature_size += cnn_output_dim
       else:
@@ -99,8 +101,7 @@ class DrQDictFeaturesExtractor(BaseFeaturesExtractor):
     if image.dim() == 3:
       image = image.unsqueeze(0)
     if image.dim() != 4:
-      raise ValueError(
-          f"Expected 4D image tensor, got shape {tuple(image.shape)}")
+      raise ValueError(f"Expected 4D image tensor, got shape {tuple(image.shape)}")
 
     # Check if the image is already in channel-first format
     if image.shape[1] in (1, 3, 4):
@@ -108,8 +109,7 @@ class DrQDictFeaturesExtractor(BaseFeaturesExtractor):
     # Check if the image is in channel-last format and permute to channel-first
     if image.shape[-1] in (1, 3, 4):
       return image.permute(0, 3, 1, 2)
-    raise ValueError(
-        f"Cannot infer channel dimension for image shape {tuple(image.shape)}")
+    raise ValueError(f"Cannot infer channel dimension for image shape {tuple(image.shape)}")
 
   def forward(self, observations) -> torch.Tensor:
     # Process each observation component through its extractor

@@ -8,11 +8,9 @@ import yaml
 
 def setup_logging(level=logging.INFO):
   """Setup logging for the application."""
-  logging.basicConfig(
-      format='[%(levelname)s] %(asctime)s - %(message)s',
-      datefmt='%H:%M:%S',
-      level=level
-  )
+  logging.basicConfig(format='[%(levelname)s] %(asctime)s - %(message)s',
+                      datefmt='%H:%M:%S',
+                      level=level)
 
 def load_config(config_path='config/base.yaml'):
   """Load configuration from YAML file."""
@@ -22,8 +20,7 @@ def load_config(config_path='config/base.yaml'):
   with open(config_file, 'r') as f:
     return yaml.safe_load(f)
 
-def find_latest_checkpoint(checkpoint_dir: str,
-                           name_prefix: str = "sac_carla") -> tuple:
+def find_latest_checkpoint(checkpoint_dir: str, name_prefix: str = "sac_carla") -> tuple:
   """Find the most recent checkpoint in a directory.
 
   Args:
@@ -36,13 +33,11 @@ def find_latest_checkpoint(checkpoint_dir: str,
   if not os.path.exists(checkpoint_dir):
     return None, None
 
-  checkpoint_files = glob.glob(os.path.join(
-      checkpoint_dir, f"{name_prefix}_*_steps.zip"))
+  checkpoint_files = glob.glob(os.path.join(checkpoint_dir, f"{name_prefix}_*_steps.zip"))
   if not checkpoint_files:
     return None, None
 
-  filename_regex = re.compile(
-      rf"^{re.escape(name_prefix)}_(\d+)_steps\.zip$")
+  filename_regex = re.compile(rf"^{re.escape(name_prefix)}_(\d+)_steps\.zip$")
   parsed_checkpoints = []
   for checkpoint_path in checkpoint_files:
     filename = os.path.basename(checkpoint_path)

@@ -9,8 +9,10 @@ def get_speed_limit_kmh(speed_limit_kmh: float, speed_config: dict) -> float:
 
   return float(np.clip(speed_limit_kmh, 0.0, max_forward_speed_kmh))
 
-def compute_target_speed(light_state: str, distance_to_stop: float,
-                         speed_limit_kmh: float, speed_config: dict,
+def compute_target_speed(light_state: str,
+                         distance_to_stop: float,
+                         speed_limit_kmh: float,
+                         speed_config: dict,
                          traffic_lights_enabled: bool = True) -> float:
   """Compute reward target speed using speed limit and traffic light context.
 
@@ -22,11 +24,12 @@ def compute_target_speed(light_state: str, distance_to_stop: float,
   max_forward_speed_kmh = float(speed_config['max_forward_speed_kmh'])
   target_fraction = float(speed_config['target_fraction'])
 
-  cruise_target_kmh = float(np.clip(
+  cruise_target_kmh = float(
+    np.clip(
       effective_limit_kmh * target_fraction,
       0.0,
       max_forward_speed_kmh,
-  ))
+    ))
 
   if not traffic_lights_enabled:
     return cruise_target_kmh
@@ -70,21 +73,25 @@ def is_holding_at_red(state: dict | None, stop_reward_config: dict) -> bool:
   max_hold_speed_kmh = float(stop_reward_config['max_hold_speed_kmh'])
   return float(state.get('speed', 0.0)) <= max_hold_speed_kmh
 
-def compute_reward_with_components(state: dict, action: np.ndarray, prev_state: dict,
-                                   prev_action: np.ndarray, weights: dict, speed_config: dict,
+def compute_reward_with_components(state: dict,
+                                   action: np.ndarray,
+                                   prev_state: dict,
+                                   prev_action: np.ndarray,
+                                   weights: dict,
+                                   speed_config: dict,
                                    stop_reward_config: dict | None = None) -> tuple:
   """Compute dense reward and return a breakdown of signed component contributions."""
   stop_reward_config = dict(stop_reward_config)
   components = {
-      'waypoint_progress': 0.0,
-      'target_speed_compliance': 0.0,
-      'lane_deviation': 0.0,
-      'smoothness_steer': 0.0,
-      'smoothness_accel_brake': 0.0,
-      'collision': 0.0,
-      'traffic_light_violation': 0.0,
-      'holding_at_red': 0.0,
-      'success': 0.0,
+    'waypoint_progress': 0.0,
+    'target_speed_compliance': 0.0,
+    'lane_deviation': 0.0,
+    'smoothness_steer': 0.0,
+    'smoothness_accel_brake': 0.0,
+    'collision': 0.0,
+    'traffic_light_violation': 0.0,
+    'holding_at_red': 0.0,
+    'success': 0.0,
   }
 
   # Waypoint progress is based on the change in distance to the current waypoint
@@ -96,15 +103,13 @@ def compute_reward_with_components(state: dict, action: np.ndarray, prev_state: 
     if prev_wp_dist is not None and curr_wp_dist is not None:
       if curr_wp_idx == prev_wp_idx:
         waypoint_progress = prev_wp_dist - curr_wp_dist
-        components['waypoint_progress'] = (
-            weights['waypoint_progress'] * waypoint_progress)
+        components['waypoint_progress'] = (weights['waypoint_progress'] * waypoint_progress)
 
   # Traffic light compliance is based on the error between the target speed and actual speed.
   traffic_lights_enabled = bool(state.get('traffic_lights_enabled', True))
   traffic_light_violation = state.get('traffic_light_violation', False)
   speed_error_kmh = min(abs(state.get('speed_error_kmh', 0.0)), 20.0)
-  components['target_speed_compliance'] = (
-      -weights['target_speed_compliance'] * speed_error_kmh)
+  components['target_speed_compliance'] = (-weights['target_speed_compliance'] * speed_error_kmh)
 
   lane_error_abs = abs(state.get('lane_error_signed', 0.0))
   components['lane_deviation'] = -weights['lane_deviation'] * lane_error_abs
@@ -126,8 +131,7 @@ def compute_reward_with_components(state: dict, action: np.ndarray, prev_state: 
     components['traffic_light_violation'] = -weights['traffic_light_violation']
 
   # Holding correctly at a red or yellow light gives a small sustained reward.
-  current_is_valid_stop_hold = is_holding_at_red(
-      state, stop_reward_config)
+  current_is_valid_stop_hold = is_holding_at_red(state, stop_reward_config)
   if current_is_valid_stop_hold:
     components['holding_at_red'] = float(stop_reward_config['sustain_per_step'])
 
@@ -138,11 +142,14 @@ def compute_reward_with_components(state: dict, action: np.ndarray, prev_state: 
   reward = float(sum(components.values()))
   return reward, components
 
-def compute_reward(state: dict, action: np.ndarray, prev_state: dict,
-                   prev_action: np.ndarray, weights: dict, speed_config: dict,
+def compute_reward(state: dict,
+                   action: np.ndarray,
+                   prev_state: dict,
+                   prev_action: np.ndarray,
+                   weights: dict,
+                   speed_config: dict,
                    stop_reward_config: dict | None = None) -> float:
   """Compute dense reward from state/action."""
-  reward, _ = compute_reward_with_components(
-      state, action, prev_state, prev_action, weights, speed_config,
-      stop_reward_config)
+  reward, _ = compute_reward_with_components(state, action, prev_state, prev_action, weights,
+                                             speed_config, stop_reward_config)
   return reward

@@ -10,7 +10,7 @@ vehicle:
 
 # Observation configuration for RGB sensor for RL
 observation:
-  use_camera: true
+  use_camera: false
   width: 84
   height: 84
   fov: 90

@@ -31,37 +31,33 @@ def test(model_path: str = None, episodes: int = 5, agent_choice: str = "auto"):
 
   if requested_variant != active_env_variant:
     raise ValueError(
-        "Agent choice does not match current base camera setting. "
-        f"Requested variant '{requested_variant}', but base config resolves to '{active_env_variant}'. "
-        "Use '--agent auto' or update observation.use_camera in config/base.yaml."
-    )
+      "Agent choice does not match current base camera setting. "
+      f"Requested variant '{requested_variant}', but base config resolves to '{active_env_variant}'. "
+      "Use '--agent auto' or update observation.use_camera in config/base.yaml.")
 
   env = None
   try:
     if not model_path:
       model_path, checkpoint_steps = find_latest_checkpoint(checkpoint_dir)
       if not model_path:
-        raise FileNotFoundError(
-            f"No checkpoint found in '{checkpoint_dir}' directory")
+        raise FileNotFoundError(f"No checkpoint found in '{checkpoint_dir}' directory")
     else:
       checkpoint_steps = _extract_checkpoint_steps(model_path)
       if checkpoint_steps is None:
         checkpoint_steps = 0
         logging.warning(
-            "Could not parse checkpoint steps from '%s'; defaulting curriculum timestep to 0.",
-            model_path,
+          "Could not parse checkpoint steps from '%s'; defaulting curriculum timestep to 0.",
+          model_path,
         )
 
     logging.info(f"Agent variant: {requested_variant}")
     logging.info(f"Checkpoint directory: {checkpoint_dir}")
     logging.info(f"Testing agent from: {model_path}")
-    logging.info(
-        f"Checkpoint steps: {checkpoint_steps} - applying matching curriculum")
+    logging.info(f"Checkpoint steps: {checkpoint_steps} - applying matching curriculum")
     logging.info(f"Episodes: {episodes}")
 
     # Create non-vectorized env for direct access to CARLA
-    env = create_env(vectorize=False, mode='test',
-                     agent_variant=requested_variant)
+    env = create_env(vectorize=False, mode='test', agent_variant=requested_variant)
     agent = load_agent(model_path, env=env, agent_variant=requested_variant)
 
     # Unwrap Monitor to access CarlaEnv directly
@@ -92,17 +88,14 @@ def test(model_path: str = None, episodes: int = 5, agent_choice: str = "auto"):
         forward = spectator_transform.get_forward_vector()
         location = vehicle_transform.location - forward * config['camera']['distance_behind'] + \
             carla.Vector3D(z=config['camera']['height_above'])
-        spectator.set_transform(carla.Transform(
-            location, spectator_transform.rotation))
+        spectator.set_transform(carla.Transform(location, spectator_transform.rotation))
 
         # Draw destination
-        world.debug.draw_line(
-            destination,
-            destination + carla.Location(z=150),
-            thickness=0.4,
-            color=carla.Color(255, 0, 0),
-            life_time=0.1
-        )
+        world.debug.draw_line(destination,
+                              destination + carla.Location(z=150),
+                              thickness=0.4,
+                              color=carla.Color(255, 0, 0),
+                              life_time=0.1)
 
         # Use policy for testing, no randomness
         action, _ = agent.predict(obs, deterministic=True)
@@ -112,29 +105,26 @@ def test(model_path: str = None, episodes: int = 5, agent_choice: str = "auto"):
         episode_reward += step_reward
         episode_steps += 1
 
-      logging.info(
-          f"Episode {ep + 1}: Reward={episode_reward:8.2f}, Steps={episode_steps:4d}")
+      logging.info(f"Episode {ep + 1}: Reward={episode_reward:8.2f}, Steps={episode_steps:4d}")
 
   except KeyboardInterrupt:
-    logging.info(
-        "Testing interrupted by user (KeyboardInterrupt). Cleaning up...")
+    logging.info("Testing interrupted by user (KeyboardInterrupt). Cleaning up...")
   finally:
     if env is not None:
       env.close()
 
 if __name__ == "__main__":
-  parser = argparse.ArgumentParser(
-      description="Test trained SAC agent on CARLA")
+  parser = argparse.ArgumentParser(description="Test trained SAC agent on CARLA")
+  parser.add_argument("--model",
+                      type=str,
+                      help="Path to model checkpoint (defaults to most recent)")
+  parser.add_argument("--episodes", type=int, default=5, help="Number of episodes")
   parser.add_argument(
-      "--model", type=str, help="Path to model checkpoint (defaults to most recent)")
-  parser.add_argument("--episodes", type=int, default=5,
-                      help="Number of episodes")
-  parser.add_argument(
-      "--agent",
-      type=str,
-      default="auto",
-      choices=["auto", "camera", "no_camera"],
-      help="Agent variant to test: auto (from base config), camera (DrQ), or no_camera (plain SAC)",
+    "--agent",
+    type=str,
+    default="auto",
+    choices=["auto", "camera", "no_camera"],
+    help="Agent variant to test: auto (from base config), camera (DrQ), or no_camera (plain SAC)",
   )
 
   args = parser.parse_args()
